@@ -14,7 +14,9 @@ BB_SRC="$(pwd)/initramfs/busybox-src"
 
 echo "==> [1/5] Fetch + cross-compile static busybox"
 if [ ! -d "$BB_SRC" ]; then
-  git clone --depth 1 -b 1_36_1 https://git.busybox.net/busybox "$BB_SRC"
+  # primary: GitHub mirror (stable); fallback: official cgit host
+  git clone --depth 1 -b 1_36_1 https://github.com/mirror/busybox "$BB_SRC" \
+    || git clone --depth 1 -b 1_36_1 https://git.busybox.net/busybox "$BB_SRC"
 fi
 
 (
