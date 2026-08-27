@@ -55,6 +55,8 @@ jobs:
           # Append nubia bring-up fragment and resolve deps (last value wins)
           cat ../config-fragment >> .config
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" olddefconfig
+          # dump resolved configs for debugging (display chain especially)
+          grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz dtbs
 
       - name: Build initramfs
