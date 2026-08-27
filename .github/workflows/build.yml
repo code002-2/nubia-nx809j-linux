@@ -93,9 +93,16 @@ jobs:
 
       - name: Build self-contained GRUB EFI payload
         run: |
-          sudo add-apt-repository -y universe
-          sudo apt-get update
-          sudo apt-get install -y grub-efi-arm64-bin
+          # grub-efi-arm64-bin is an arm64-arch package: not installable via
+          # apt on the amd64 runner. Extract the Debian amd64 grub-common
+          # (mkimage/mkstandalone) plus the arm64-efi module set into /opt.
+          mkdir -p /opt/g && cd /opt/g
+          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-common_2.12-9+deb13u2_amd64.deb
+          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-efi-arm64-bin_2.12-9+deb13u2_arm64.deb
+          dpkg -x grub-common_2.12-9+deb13u2_amd64.deb .
+          dpkg -x grub-efi-arm64-bin_2.12-9+deb13u2_arm64.deb .
+          ls usr/lib/grub/
+          cd "$GITHUB_WORKSPACE"
           mkdir -p efiroot/boot/grub
           cp kernel/arch/arm64/boot/Image.gz                  efiroot/boot/
           cp kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb efiroot/boot/
@@ -110,7 +117,9 @@ jobs:
             initrd    (memdisk)/boot/initramfs.cpio.gz
           }
           CFG
-          grub-mkstandalone -O arm64-efi -o out/nx809j_mainline.efi \
+          /opt/g/usr/bin/grub-mkstandalone -O arm64-efi \
+            --directory=/opt/g/usr/lib/grub/arm64-efi \
+            -o out/nx809j_mainline.efi \
             "boot/grub/grub.cfg=$(pwd)/efiroot/boot/grub/grub.cfg" \
             "boot/Image.gz=$(pwd)/efiroot/boot/Image.gz" \
             "boot/nubia-nx809j.dtb=$(pwd)/efiroot/boot/nubia-nx809j.dtb" \
