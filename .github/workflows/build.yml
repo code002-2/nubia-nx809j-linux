@@ -90,3 +90,35 @@ jobs:
           path: out/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Build self-contained GRUB EFI payload
+        run: |
+          sudo apt-get install -y grub-efi-arm64-bin
+          mkdir -p efiroot/boot/grub
+          cp kernel/arch/arm64/boot/Image.gz                  efiroot/boot/
+          cp kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb efiroot/boot/
+          cp initramfs.cpio.gz                                efiroot/boot/
+          cat > efiroot/boot/grub/grub.cfg <<'CFG'
+          set timeout=0
+          menuentry "Nubia NX809J mainline" {
+            linux   (memdisk)/boot/Image.gz \
+                    console=ttyMSM0,115200n8 console=tty1 console=ttyGS0,115200n8 \
+                    ignore_loglevel
+            devicetree (memdisk)/boot/nubia-nx809j.dtb
+            initrd    (memdisk)/boot/initramfs.cpio.gz
+          }
+          CFG
+          grub-mkstandalone -O arm64-efi -o out/nx809j_mainline.efi \
+            "boot/grub/grub.cfg=$(pwd)/efiroot/boot/grub/grub.cfg" \
+            "boot/Image.gz=$(pwd)/efiroot/boot/Image.gz" \
+            "boot/nubia-nx809j.dtb=$(pwd)/efiroot/boot/nubia-nx809j.dtb" \
+            "boot/initramfs.cpio.gz=$(pwd)/efiroot/boot/initramfs.cpio.gz"
+          ls -lh out/
+
+      - name: Upload EFI payload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nubia-nx809j-efi-payload
+          path: out/nx809j_mainline.efi
+          if-no-files-found: error
+          retention-days: 30
