@@ -78,7 +78,7 @@ jobs:
           bash scripts/mkboot.sh \
             kernel/arch/arm64/boot/Image.gz \
             kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb \
-            initramfs/initramfs.cpio.gz \
+            initramfs.cpio.gz \
             out/boot.img
           cp kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb out/
           cp kernel/arch/arm64/boot/Image.gz out/
