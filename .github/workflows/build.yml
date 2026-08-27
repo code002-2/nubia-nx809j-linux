@@ -1,0 +1,80 @@
+name: Build kernel + boot.img
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: "Kernel repo ref (branch/tag/SHA) to build"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Install cross toolchain + deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            build-essential \
+            bc \
+            bison \
+            cpio \
+            flex \
+            kmod \
+            libelf-dev \
+            libssl-dev \
+            python3
+
+      - name: Clone kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: code002-2/sm8850-mainline
+          ref: ${{ github.event.inputs.kernel_ref || 'main' }}
+          path: kernel
+          # For the private sm8850-mainline repo, set a PAT secret `PAT_TOKEN`
+          # (with `repo` scope). If the repo is public, the default token works.
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build kernel (Image.gz + DTBs)
+        run: |
+          cd kernel
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          # Append nubia bring-up fragment and resolve deps (last value wins)
+          cat ../config-fragment >> .config
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz dtbs
+
+      - name: Build initramfs
+        run: bash initramfs/build-initramfs.sh
+
+      - name: Package boot.img
+        run: |
+          mkdir -p out
+          bash scripts/mkboot.sh \
+            kernel/arch/arm64/boot/Image.gz \
+            kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb \
+            initramfs/initramfs.cpio.gz \
+            out/boot.img
+          cp kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb out/
+          cp kernel/arch/arm64/boot/Image.gz out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nubia-nx809j-bootimg
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
