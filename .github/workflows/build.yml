@@ -93,6 +93,8 @@ jobs:
 
       - name: Build self-contained GRUB EFI payload
         run: |
+          sudo add-apt-repository -y universe
+          sudo apt-get update
           sudo apt-get install -y grub-efi-arm64-bin
           mkdir -p efiroot/boot/grub
           cp kernel/arch/arm64/boot/Image.gz                  efiroot/boot/
