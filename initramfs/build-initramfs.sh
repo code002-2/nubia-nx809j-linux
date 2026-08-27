@@ -12,7 +12,7 @@ ROOT="$(pwd)/initramfs/rootfs"
 WORK="$(pwd)/initramfs/work"
 BB_SRC="$(pwd)/initramfs/busybox-src"
 
-echo "==> [1/4] Fetch + cross-compile static busybox"
+echo "==> [1/5] Fetch + cross-compile static busybox"
 if [ ! -d "$BB_SRC" ]; then
   git clone --depth 1 -b 1_36_1 https://git.busybox.net/busybox "$BB_SRC"
 fi
@@ -30,7 +30,7 @@ fi
 BB="$BB_SRC/busybox"
 file "$BB" | grep -q "$ARCH" || { echo "!! busybox build failed (wrong arch)"; exit 1; }
 
-echo "==> [2/4] Lay out initramfs rootfs"
+echo "==> [2/5] Lay out initramfs rootfs"
 rm -rf "$ROOT" "$WORK"
 mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,dev/pts,tmp,etc,root,run}
 install -m755 "$BB" "$ROOT/bin/busybox"
@@ -69,7 +69,25 @@ export TERM=linux
 alias ll='ls -la'
 EOF
 
-echo "==> [3/4] Pack cpio + gzip"
+echo "==> [3/5] Install device firmware (Adreno 840 GPU)"
+FW_REPO="${FW_REPO:-https://github.com/code002-2/nubia-nx809j-firmware.git}"
+FW_DIR="$(pwd)/initramfs/firmware-src"
+if [ ! -d "$FW_DIR/.git" ]; then
+  git clone --depth 1 "$FW_REPO" "$FW_DIR"
+fi
+# Adreno 840 GPU firmware — names match the in-tree a6xx_catalog a840 entry
+# (gen80200_gmu.bin / gen80200_sqe.fw / gen80200_aqe.fw). The kernel searches
+# /lib/firmware/ and /lib/firmware/qcom/, so install to both.
+mkdir -p "$ROOT/lib/firmware" "$ROOT/lib/firmware/qcom"
+cp "$FW_DIR"/qcom/gen80200_gmu.bin "$FW_DIR"/qcom/gen80200_sqe.fw \
+   "$FW_DIR"/qcom/gen80200_aqe.fw "$FW_DIR"/qcom/gen80200_zap.mbn \
+   "$ROOT/lib/firmware/" 2>/dev/null || true
+cp "$FW_DIR"/qcom/gen80200_* "$ROOT/lib/firmware/qcom/" 2>/dev/null || true
+# NOTE: remoteproc (adsp/cdsp/modem .mdt+.bXX) and WiFi (peach) firmware are
+# intentionally NOT included — they are large and need either a DT firmware-name
+# change (.mbn -> .mdt) or ath12k layout conversion before they can load.
+
+echo "==> [4/5] Pack cpio + gzip"
 mkdir -p "$WORK"
 cp -a "$ROOT"/. "$WORK"/
 (
@@ -77,4 +95,4 @@ cp -a "$ROOT"/. "$WORK"/
   find . -print0 | cpio --null -ov --format=newc 2>/dev/null | gzip -9
 ) > "$OUT"
 
-echo "==> [4/4] Done: $OUT ($(du -h "$OUT" | cut -f1))"
+echo "==> [5/5] Done: $OUT ($(du -h "$OUT" | cut -f1))"
