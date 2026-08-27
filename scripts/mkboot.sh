@@ -19,12 +19,18 @@ MKBI="$(find scripts/mkbootimg -name 'mkbootimg.py' -o -name 'mkbootimg' -type f
 [ -n "$MKBI" ] || { echo "!! mkbootimg not found"; exit 1; }
 echo "==> mkbootimg: $MKBI"
 
+# Boot command line. console= order matters: the LAST one owns /dev/console,
+# so ttyGS0 (USB serial gadget) is last; printk still fans out to all of them.
+CMDLINE="${CMDLINE:-console=ttyMSM0,115200n8 console=tty1 console=ttyGS0,115200n8}"
+echo "==> cmdline: $CMDLINE"
+
 # header v4, 4KiB pages (device ro.boot.hardware.cpu.pagesize=4096)
 python3 "$MKBI" \
   --header_version 4 \
   --kernel "$KERNEL" \
   --ramdisk "$RAMDISK" \
   --dtb "$DTB" \
+  --cmdline "$CMDLINE" \
   --pagesize 4096 \
   --os_version 16 \
   --os_patch_level 2026-05 \

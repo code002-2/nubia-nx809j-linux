@@ -1,13 +1,35 @@
 #!/bin/sh
 # /init for the minimal busybox initramfs.
-# Mounts pseudo-filesystems and drops to a shell on the console.
+# Mounts pseudo-filesystems, brings up the ttyGS0 USB serial gadget (so a
+# PC sees a COM port over the USB-C cable -- no physical UART pads needed),
+# and drops to a shell on the active console.
 
 mount -t proc     none /proc
 mount -t sysfs    none /sys
 mount -t devtmpfs none /dev 2>/dev/null || mount -t tmpfs none /dev
 mount -t tmpfs    none /tmp
-mkdir -p /dev/pts
+mkdir -p /dev/pts /sys/kernel/config
 mount -t devpts   none /dev/pts
+
+try_usb_gadget() {
+  mount -t configfs none /sys/kernel/config 2>/dev/null || return 1
+  G=/sys/kernel/config/usb_gadget/nx809j
+  mkdir -p "$G/functions/acm.usb0" "$G/configs/c.1" || return 1
+  echo 0x18d1 > "$G/idVendor"
+  echo 0x4ee7 > "$G/idProduct"
+  mkdir -p "$G/strings/0x409"
+  echo nx809j-mainline   > "$G/strings/0x409/product"
+  echo code002-2         > "$G/strings/0x409/manufacturer"
+  ln -sf functions/acm.usb0 "$G/configs/c.1/f1"
+  UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
+  [ -n "$UDC" ] && echo "$UDC" > "$G/UDC"
+}
+try_usb_gadget || echo "WARN: usb gadget setup failed"
+
+# If the gadget came up, open an extra shell on it in the background.
+if [ -e /dev/ttyGS0 ]; then
+  setsid sh -c 'exec cttyhack sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1' &
+fi
 
 # A little banner
 echo
@@ -17,5 +39,5 @@ echo " kernel: $(uname -r)"
 echo "============================================================"
 echo
 
-# Drop to a shell on the console
+# Drop to a shell on the console (the last console= cmdline arg owns it)
 exec setsid cttyhack /bin/sh

@@ -44,6 +44,18 @@ CONFIG_PHY_QCOM_M31_EUSB=y
 CONFIG_PHY_QCOM_EUSB2_REPEATER=y
 CONFIG_PHY_QCOM_QMP_COMBO=y
 
+# --- Screen console (no physical UART available on this device:
+#     fbcon drives the panel via fbdev emulation; kernel boot log also
+#     goes to the ttyGS0 USB serial gadget for host-side debugging) ---
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+CONFIG_LOGO=y
+
+# --- ttyGS0 USB virtual serial console (configfs acm gadget) ---
+CONFIG_USB_CONFIGFS_ACM=y
+
 # --- Display (DRM/MSM + NT37801 panel; DSI phy is part of DRM_MSM) ---
 # msm does NOT select the helper chain, so every built-in consumer needs =y
 CONFIG_DRM=y
