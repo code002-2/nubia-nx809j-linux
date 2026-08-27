@@ -24,6 +24,8 @@ fi
   sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
   echo 'CONFIG_STATIC=y' >> .config
   echo 'CONFIG_FEATURE_HAVE_RPC=n' >> .config
+  # normalise (and silence stray interactive prompts) before building
+  make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" oldconfig < /dev/null > /dev/null || true
   make -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" busybox
 )
 
