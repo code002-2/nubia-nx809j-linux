@@ -1,16 +1,18 @@
 # ---- Nubia NX809J (SM8850 / kaanapali) bring-up config fragment ----
-# Appended to arm64 defconfig, then resolved via `make olddefconfig`.
-# Enable the bits needed to reach a console + display + UFS + USB + GPU.
+# Appended to arm64 defconfig, then `make olddefconfig`.
+# Principle: everything needed at boot is =y — the initramfs ships no modules,
+# so any =m from defconfig is effectively absent at boot.
 
-# --- SoC / platform (gates all kaanapali SoC support + DTBs) ---
+# --- SoC / platform (gates all kaanapali SoC support + board DTBs) ---
 CONFIG_ARCH_QCOM=y
 
-# --- Serial console (uart7) ---
-CONFIG_TTY=y
-CONFIG_SERIAL_CORE=y
-CONFIG_SERIAL_CORE_CONSOLE=y
-CONFIG_SERIAL_QCOM=y
-CONFIG_SERIAL_QCOM_CONSOLE=y
+# --- Pinctrl (CRITICAL: kaanapali TLMM; absent in defconfig) ---
+CONFIG_PINCTRL=y
+CONFIG_PINCTRL_KAANAPALI=y
+
+# --- Serial console (uart7 = qcom,geni-debug-uart) ---
+CONFIG_SERIAL_QCOM_GENI=y
+CONFIG_SERIAL_QCOM_GENI_CONSOLE=y
 
 # --- Initramfs + early userspace ---
 CONFIG_BLK_DEV_INITRD=y
@@ -22,52 +24,58 @@ CONFIG_SYSFS=y
 CONFIG_BINFMT_ELF=y
 CONFIG_BINFMT_SCRIPT=y
 
-# --- UFS storage ---
+# --- UFS storage (root on UFS) ---
 CONFIG_BLOCK=y
 CONFIG_SCSI=y
 CONFIG_BLK_DEV_SD=y
 CONFIG_SCSI_UFSHCD=y
 CONFIG_SCSI_UFSHCD_PLATFORM=y
 CONFIG_SCSI_UFS_QCOM=y
+CONFIG_PHY_QCOM_QMP_UFS=y
 
-# --- USB (peripheral + adbd/fastboot) ---
+# --- USB (host + gadget; mainline has no ADB function) ---
 CONFIG_USB=y
 CONFIG_USB_SUPPORT=y
 CONFIG_USB_DWC3=y
 CONFIG_USB_DWC3_QCOM=y
 CONFIG_USB_GADGET=y
 CONFIG_USB_CONFIGFS=y
-CONFIG_USB_CONFIGFS_F_ADB=y
+CONFIG_PHY_QCOM_M31_EUSB=y
+CONFIG_PHY_QCOM_EUSB2_REPEATER=y
+CONFIG_PHY_QCOM_QMP_COMBO=y
 
-# --- Display (DRM/MSM + NT37801 panel) ---
+# --- Display (DRM/MSM + NT37801 panel; DSI phy is part of DRM_MSM) ---
 CONFIG_DRM=y
 CONFIG_DRM_MSM=y
 CONFIG_DRM_MSM_DSI=y
 CONFIG_DRM_PANEL_NOVATEK_NT37801=y
-CONFIG_PHY_QCOM_DSI=y
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_CLK_KAANAPALI_DISPCC=y
 
-# --- GPU (Adreno 840 via drm/msm/adreno) ---
-CONFIG_DRM_MSM_ADRENO=y
+# --- GPU (Adreno 840 via drm/msm/adreno; no separate ADRENO config) ---
+CONFIG_CLK_KAANAPALI_GPUCC=y
 
 # --- IOMMU (adreno_smmu = arm,mmu-500) ---
 CONFIG_IOMMU_SUPPORT=y
 CONFIG_ARM_SMMU=y
 CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y
 
-# --- Qualcomm SoC glue ---
+# --- Qualcomm SoC glue (mostly =y in defconfig already; kept explicit) ---
 CONFIG_QCOM_RPMH=y
+CONFIG_QCOM_CLK_RPMH=y
 CONFIG_QCOM_AOSS_QMP=y
 CONFIG_QCOM_PDC=y
 CONFIG_REGULATOR_QCOM_RPMH=y
-CONFIG_REGULATOR_FIXED=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
 CONFIG_INTERCONNECT=y
 CONFIG_INTERCONNECT_QCOM=y
 CONFIG_QCOM_GENI_SE=y
 CONFIG_QCOM_GPI_DMA=y
-CONFIG_PINCTRL=y
-CONFIG_PINCTRL_KAANAPALI=y
 CONFIG_COMMON_CLK_QCOM=y
+CONFIG_CLK_KAANAPALI_GCC=y
+
+# --- Remoteprocs (ADSP/CDSP/SOCCP; need firmware to actually start) ---
+CONFIG_QCOM_Q6V5_PAS=y
 
 # --- Filesystems (for real rootfs later) ---
 CONFIG_EXT4_FS=y
