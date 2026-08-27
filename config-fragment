@@ -50,6 +50,11 @@ CONFIG_DRM=y
 CONFIG_DRM_MSM=y
 CONFIG_DRM_MSM_DSI=y
 CONFIG_DRM_KMS_HELPER=y
+# DRM_KMS_HELPER is a PROMPTLESS tristate in this tree -- values from
+# .config are ignored by olddefconfig, it can only be set via another
+# driver's select. Enable this dummy bridge (matches nothing on-board)
+# to pull KMS_HELPER in as built-in.
+CONFIG_DRM_SIMPLE_BRIDGE=y
 CONFIG_DRM_DISPLAY_HELPER=y
 CONFIG_DRM_DISPLAY_DP_AUX_BUS=y
 CONFIG_DRM_DISPLAY_DP_HELPER=y
