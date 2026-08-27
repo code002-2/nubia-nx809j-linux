@@ -97,10 +97,10 @@ jobs:
           # apt on the amd64 runner. Extract the Debian amd64 grub-common
           # (mkimage/mkstandalone) plus the arm64-efi module set into /opt.
           mkdir -p /opt/g && cd /opt/g
-          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-common_2.12-9+deb13u2_amd64.deb
-          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-efi-arm64-bin_2.12-9+deb13u2_arm64.deb
-          dpkg -x grub-common_2.12-9+deb13u2_amd64.deb .
-          dpkg -x grub-efi-arm64-bin_2.12-9+deb13u2_arm64.deb .
+          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-common_2.06-3~deb11u6_amd64.deb
+          wget -q http://deb.debian.org/debian/pool/main/g/grub2/grub-efi-arm64-bin_2.06-3~deb11u6_arm64.deb
+          dpkg -x grub-common_2.06-3~deb11u6_amd64.deb .
+          dpkg -x grub-efi-arm64-bin_2.06-3~deb11u6_arm64.deb .
           ls usr/lib/grub/
           cd "$GITHUB_WORKSPACE"
           mkdir -p efiroot/boot/grub
