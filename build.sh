@@ -29,8 +29,17 @@ fi
 echo "==> [2/4] Build kernel (Image.gz + dtbs)"
 cd "$KDIR"
 make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" defconfig
-cat "$ROOT/config-fragment" >> .config
+# Force-enable every =y from the fragment via scripts/config (raw append to
+# .config is unreliable when a duplicate exists, see merge_config.sh notes).
+while read -r line; do
+  case "$line" in
+    CONFIG_[A-Z0-9_]*=y)
+      sym="${line%%=*}"; sym="${sym#CONFIG_}"
+      ./scripts/config --file .config --enable "$sym";;
+  esac
+done < "$ROOT/config-fragment"
 make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" olddefconfig
+grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
 make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" Image.gz dtbs
 cd "$ROOT"
 

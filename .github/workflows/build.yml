@@ -52,8 +52,16 @@ jobs:
         run: |
           cd kernel
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          # Append nubia bring-up fragment and resolve deps (last value wins)
-          cat ../config-fragment >> .config
+          # Force-enable every =y option from the fragment. Raw `cat >> .config`
+          # is unreliable with duplicates (olddefconfig can keep the base =m),
+          # so apply each option explicitly with scripts/config, then resolve.
+          while read -r line; do
+            case "$line" in
+              CONFIG_[A-Z0-9_]*=y)
+                sym="${line%%=*}"; sym="${sym#CONFIG_}"
+                ./scripts/config --file .config --enable "$sym";;
+            esac
+          done < ../config-fragment
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" olddefconfig
           # dump resolved configs for debugging (display chain especially)
           grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
