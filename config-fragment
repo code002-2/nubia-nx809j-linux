@@ -56,6 +56,14 @@ CONFIG_LOGO=y
 # --- ttyGS0 USB virtual serial console (configfs acm gadget) ---
 CONFIG_USB_CONFIGFS_ACM=y
 
+# --- Black-box flight recorder: if a test boots to nothing (no COM port,
+#     no screen), the last printk tail survives reboot and can be read
+#     back from Android via KernelSU: /sys/fs/pstore/console-ramoops-0.
+#     Reuses the vendor ramoops@E2000000 physical region unchanged. ---
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+
 # --- Display (DRM/MSM + NT37801 panel; DSI phy is part of DRM_MSM) ---
 # msm does NOT select the helper chain, so every built-in consumer needs =y
 CONFIG_DRM=y
