@@ -82,6 +82,11 @@ jobs:
             out/boot.img
           cp kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb out/
           cp kernel/arch/arm64/boot/Image.gz out/
+          # Ship the build metadata needed for crash / dmesg analysis:
+          # System.map (symbol VAs), vmlinux, and .config (KASLR, VA bits).
+          cp kernel/System.map out/ 2>/dev/null || true
+          cp kernel/vmlinux out/ 2>/dev/null || true
+          cp kernel/.config out/ 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
