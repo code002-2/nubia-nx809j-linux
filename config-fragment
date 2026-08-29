@@ -70,6 +70,10 @@ CONFIG_DRM=y
 CONFIG_DRM_MSM=y
 CONFIG_DRM_MSM_DSI=y
 CONFIG_DRM_KMS_HELPER=y
+# CRITICAL for an on-panel fbcon: without DRM_FBDEV_EMULATION the KMS
+# driver creates no fb0, so fbcon has nothing to attach to and the kernel
+# log never appears on the panel (you only see the bootloader splash).
+CONFIG_DRM_FBDEV_EMULATION=y
 # DRM_KMS_HELPER is a PROMPTLESS tristate in this tree -- values from
 # .config are ignored by olddefconfig, it can only be set via another
 # driver's select. Enable this dummy bridge (matches nothing on-board)
