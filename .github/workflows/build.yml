@@ -64,6 +64,13 @@ jobs:
                 ./scripts/config --file .config --enable "$sym";;
             esac
           done < ../config-fragment
+          # Bring-up: we boot this kernel with the classic FDT protocol
+          # (GRUB 2.06 arm64-efi `linux`+`devicetree`). An EFI-stub kernel
+          # (CONFIG_EFI_STUB=y, "MZ" PE header at Image offset 0) mixes
+          # EFI runtime/service paths into an FDT boot and crashes before
+          # console. Force the pure-FDT path so Image offset 0 is the real
+          # arm64 head entry; no EFI stub, no EFI runtime.
+          ./scripts/config --file .config --disable EFI --disable EFI_STUB
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" olddefconfig
           # dump resolved configs for debugging (display chain especially)
           grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
