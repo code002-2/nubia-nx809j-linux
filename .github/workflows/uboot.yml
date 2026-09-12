@@ -36,7 +36,7 @@ env:
   #   main   = the port (upstream + NX809J board support)
   #   master = pristine upstream, the fork's base (8dbe57ba648)
   UBOOT_REPO: https://github.com/code002-2/uboot
-  UBOOT_DEFAULT_REF: 65712c5865559f0be2ff55e3cbf7fa0a92b87df7
+  UBOOT_DEFAULT_REF: d78db18dc3b551749af6e35b8c3dde2f960efd6a
 
 jobs:
   uboot:
@@ -99,6 +99,14 @@ jobs:
           grep -q 'CONFIG_CMD_SCSI=y'      uboot-src/configs/qcom_nx809j_defconfig
           grep -q 'scsi scan'              uboot-src/board/qualcomm/nx809j.env
           grep -q 'memory {'               uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts
+          # bootcmd is ONE line once the backslash continuations are joined, and
+          # cli_simple_run_command() refuses any command not strictly shorter
+          # than CONFIG_SYS_CBSIZE: it prints "## Command too long!" and runs
+          # nothing at all - no partition lookup, no sysboot, no diagnostics. At
+          # 2092 bytes against a 2048 limit this file did exactly that on the
+          # device, and the only evidence was that one line on the panel.
+          limit=$(sed -n 's/^CONFIG_SYS_CBSIZE=//p' uboot-src/configs/qcom_nx809j_defconfig)
+          python3 scripts/envlen.py uboot-src/board/qualcomm/nx809j.env "${limit:-2048}"
           git -C uboot-src log --oneline -3
 
       - name: ccache
