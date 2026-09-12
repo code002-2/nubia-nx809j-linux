@@ -21,7 +21,11 @@ echo "==> mkbootimg: $MKBI"
 
 # Boot command line. console= order matters: the LAST one owns /dev/console,
 # so ttyGS0 (USB serial gadget) is last; printk still fans out to all of them.
-CMDLINE="${CMDLINE:-console=ttyMSM0,115200n8 console=tty1 console=ttyGS0,115200n8}"
+# icc-rpmh.qos_disable=1 is REQUIRED for bring-up: the static QoS MMIO of the
+# LPASS/MMSS/NSP NoC providers sits in unpowered islands, and programming it
+# raises a synchronous external abort that kills the boot. Both '-' and '_'
+# spellings are passed to be robust against the KBUILD module-name form.
+CMDLINE="${CMDLINE:-console=ttyMSM0,115200n8 console=tty1 console=ttyGS0,115200n8 icc-rpmh.qos_disable=1 icc_rpmh.qos_disable=1}"
 echo "==> cmdline: $CMDLINE"
 
 # header v4, 4KiB pages (device ro.boot.hardware.cpu.pagesize=4096)

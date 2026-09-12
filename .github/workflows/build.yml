@@ -124,6 +124,7 @@ jobs:
           menuentry "Nubia NX809J mainline" {
             linux   (memdisk)/boot/Image.gz \
                     console=ttyMSM0,115200n8 console=tty1 console=ttyGS0,115200n8 \
+                    icc-rpmh.qos_disable=1 icc_rpmh.qos_disable=1 \
                     ignore_loglevel
             devicetree (memdisk)/boot/nubia-nx809j.dtb
             initrd    (memdisk)/boot/initramfs.cpio.gz
