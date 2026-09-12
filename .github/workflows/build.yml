@@ -191,22 +191,12 @@ jobs:
           mcopy -i out/bootb.img initramfs.cpio.gz                                 ::/initramfs.cpio.gz
           mcopy -i out/bootb.img bootb/extlinux.conf                               ::/extlinux/extlinux.conf
           # Assert the two facts the device depends on, rather than discovering
-          # them on a panel that may not even be readable: the FAT must carry
-          # 4096-byte sectors, and the image must fit the boot_b partition
-          # (100663296 bytes). Both failures are otherwise silent until sysboot
-          # refuses to read a file.
-          python3 - <<'PY'
-import os, struct
-p = 'out/bootb.img'
-b = open(p, 'rb').read(512)
-bps, = struct.unpack_from('<H', b, 11)
-spc = b[13]
-size = os.path.getsize(p)
-print("==> bootb.img: %d bytes, bytes/sector=%d, sectors/cluster=%d, cluster=%d B, label=%r, fstype=%r"
-      % (size, bps, spc, bps * spc, b[43:54].decode('latin-1').strip(), b[54:62].decode('latin-1').strip()))
-assert bps == 4096, "staging FAT must use 4096-byte sectors (UFS logical block size is 4096)"
-assert size <= 100663296, "bootb.img (%d) does not fit the 100663296-byte boot_b partition" % size
-PY
+          # them on a panel that may not even be readable. (The check lives in a
+          # script rather than a heredoc here: a heredoc body has to be indented
+          # to match the YAML block, and getting that wrong makes the whole
+          # workflow unparseable - GitHub then reports a failure with no jobs at
+          # all, which is exactly what a heredoc written at column 0 did.)
+          python3 bootb/check-fat.py out/bootb.img 100663296 4096
           echo "--- bootb.img contents ---"
           mdir -i out/bootb.img -/ ::
           ls -lh out/bootb.img
