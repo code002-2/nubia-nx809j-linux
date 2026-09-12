@@ -33,6 +33,7 @@ jobs:
             build-essential \
             bc \
             bison \
+            ccache \
             cpio \
             flex \
             kmod \
@@ -50,9 +51,27 @@ jobs:
           # (with `repo` scope). If the repo is public, the default token works.
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          # A fresh key per commit, but restore-keys fall back to the newest
+          # cache of this branch, so DT-only commits reuse every kernel object.
+          key: ccache-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.ref }}-
+            ccache-
+
       - name: Build kernel (Image.gz + DTBs)
         run: |
           cd kernel
+          # ccache: most of our commits only touch the .dts, which leaves every
+          # kernel object unchanged, so a warm cache turns the ~10 min full
+          # kernel build into ~1-2 min.
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          export CCACHE_MAXSIZE=5G
+          export CC="ccache aarch64-linux-gnu-gcc"
+          ccache -s || true
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           # Force-enable every =y option from the fragment. Raw `cat >> .config`
           # is unreliable with duplicates (olddefconfig can keep the base =m),
@@ -75,6 +94,8 @@ jobs:
           # dump resolved configs for debugging (display chain especially)
           grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz dtbs
+          echo "--- ccache stats after build ---"
+          ccache -s || true
 
       - name: Build initramfs
         run: bash initramfs/build-initramfs.sh
