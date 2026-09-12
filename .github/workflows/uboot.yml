@@ -1,4 +1,4 @@
-name: Build U-Boot (NX809J)
+﻿name: Build U-Boot (NX809J)
 
 # Builds the U-Boot port for the Nubia Red Magic 11S Pro+ (NX809J, SM8850
 # "kaanapali") on top of infiniti-mainline/u-boot's kaanapali SoC support, and
@@ -36,7 +36,7 @@ env:
   #   main   = the port (upstream + NX809J board support)
   #   master = pristine upstream, the fork's base (8dbe57ba648)
   UBOOT_REPO: https://github.com/code002-2/uboot
-  UBOOT_DEFAULT_REF: d78db18dc3b551749af6e35b8c3dde2f960efd6a
+  UBOOT_DEFAULT_REF: 870586b0cd0d655ecc3fe23331b0fb8e31efbb09
 
 jobs:
   uboot:
@@ -91,13 +91,16 @@ jobs:
           set -e
           for f in arch/arm/dts/kaanapali-nubia-nx809j.dts \
                    configs/qcom_nx809j_defconfig \
-                   board/qualcomm/nx809j.env ; do
+                   configs/qcom_nx809j_dump_defconfig \
+                   board/qualcomm/nx809j.env \
+                   board/qualcomm/nx809j-dump.env ; do
             [ -s "uboot-src/$f" ] || { echo "!! missing uboot-src/$f"; exit 1; }
             echo "==> $f present ($(stat -c %s "uboot-src/$f") bytes)"
           done
           grep -q 'kaanapali-nubia-nx809j' uboot-src/configs/qcom_nx809j_defconfig
           grep -q 'CONFIG_CMD_SCSI=y'      uboot-src/configs/qcom_nx809j_defconfig
           grep -q 'scsi scan'              uboot-src/board/qualcomm/nx809j.env
+          grep -q 'md.b 0xe200000c'        uboot-src/board/qualcomm/nx809j-dump.env
           grep -q 'memory {'               uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts
           # bootcmd is ONE line once the backslash continuations are joined, and
           # cli_simple_run_command() refuses any command not strictly shorter
@@ -106,7 +109,9 @@ jobs:
           # 2092 bytes against a 2048 limit this file did exactly that on the
           # device, and the only evidence was that one line on the panel.
           limit=$(sed -n 's/^CONFIG_SYS_CBSIZE=//p' uboot-src/configs/qcom_nx809j_defconfig)
-          python3 scripts/envlen.py uboot-src/board/qualcomm/nx809j.env "${limit:-2048}"
+          for env in nx809j.env nx809j-dump.env ; do
+            python3 scripts/envlen.py "uboot-src/board/qualcomm/$env" "${limit:-2048}"
+          done
           git -C uboot-src log --oneline -3
 
       - name: ccache
@@ -133,22 +138,38 @@ jobs:
           ls -l u-boot.bin u-boot.dtb u-boot.map u-boot-nodtb.bin
           # Fail loudly if the video console or the storage stack got dropped:
           # without those the image cannot even show a banner on the panel.
-          grep -E "^(CONFIG_VIDEO_SIMPLE|CONFIG_VIDEO=|CONFIG_UFS_QCOM|CONFIG_CLK_QCOM_KAANAPALI|CONFIG_QCOM_HYP_SMMU|CONFIG_ARM64|CONFIG_POSITION_INDEPENDENT|CONFIG_OF_LIVE|CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE|CONFIG_DEFAULT_DEVICE_TREE|CONFIG_BOOTDELAY)=" .config
+          grep -E "^(CONFIG_VIDEO_SIMPLE|CONFIG_VIDEO=|CONFIG_UFS_QCOM|CONFIG_CLK_QCOM_KAANAPALI|CONFIG_QCOM_HYP_SMMU|CONFIG_ARM64|CONFIG_POSITION_INDEPENDENT|CONFIG_OF_LIVE|CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE|CONFIG_DEFAULT_DEVICE_TREE|CONFIG_BOOTDELAY|CONFIG_SYS_CBSIZE)=" .config
+          # Second, deliberately non-booting image whose only job is to print
+          # the crash log pstore left in ramoops. Linux dying takes the whole
+          # panel with it (the vendor memory-dump screen overwrites it), so when
+          # the kernel crashes there is otherwise nothing left to read - no
+          # UART, no USB gadget, and the normal image would just boot Linux
+          # again. The objects are shared, so this rebuild is quick.
+          cp u-boot.bin u-boot-normal.bin
+          make qcom_nx809j_dump_defconfig
+          make -j"$(nproc)" CROSS_COMPILE="ccache aarch64-linux-gnu-"
+          cp u-boot.bin u-boot-dump.bin
+          ls -l u-boot-normal.bin u-boot-dump.bin
+          strings u-boot-dump.bin | grep -q 'crash-log dump' || {
+            echo "!! the dump image did not pick up nx809j-dump.env"; exit 1; }
 
       - name: Package boot.img
         run: |
           mkdir -p out
-          bash uboot/pack.sh uboot-src/u-boot.bin out/uboot-nx809j-boot.img out/mkwork
-          cp uboot-src/u-boot.bin      out/
-          cp uboot-src/u-boot.dtb      out/
-          cp uboot-src/u-boot.map      out/
-          cp uboot-src/.config         out/uboot-config
+          bash uboot/pack.sh uboot-src/u-boot-normal.bin out/uboot-nx809j-boot.img      out/mkwork
+          bash uboot/pack.sh uboot-src/u-boot-dump.bin   out/uboot-nx809j-dump-boot.img out/mkwork
+          cp uboot-src/u-boot-normal.bin out/u-boot.bin
+          cp uboot-src/u-boot.dtb        out/
+          cp uboot-src/u-boot.map        out/
+          cp uboot-src/.config           out/uboot-config
           # Keep the exact sources used, so an artifact can always be traced
           # back to the tree that produced it.
           mkdir -p out/src
           cp uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts out/src/
           cp uboot-src/board/qualcomm/nx809j.env              out/src/
+          cp uboot-src/board/qualcomm/nx809j-dump.env         out/src/
           cp uboot-src/configs/qcom_nx809j_defconfig          out/src/
+          cp uboot-src/configs/qcom_nx809j_dump_defconfig     out/src/
           ls -lh out/
 
       - name: Upload artifacts
