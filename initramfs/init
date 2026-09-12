@@ -49,6 +49,29 @@ LOG=/tmp/dmesg-mainline.txt
 	ls -l /dev/block/by-name 2>/dev/null
 	echo "--- dmesg ---"
 	dmesg
+	# ---------------------------------------------------------- previous crash --
+	# A crash that happened before userspace ran still leaves the console log in
+	# the ramoops region (ramoops@e2000000 in the board DT), and this boot's
+	# pstore driver reads it back out. That is the only channel that survives a
+	# crash which replaces the whole panel with the vendor's memory-dump screen
+	# before anyone can read it, so capture it FIRST and separately - if the
+	# previous boot crashed, this file is the whole point of this run.
+	echo
+	echo "=== /sys/fs/pstore (from the PREVIOUS boot, if it crashed) ==="
+	if [ -d /sys/fs/pstore ]; then
+		found=0
+		for f in /sys/fs/pstore/*; do
+			[ -f "$f" ] || continue
+			found=1
+			echo "--- $f ---"
+			cat "$f" 2>/dev/null
+			echo
+		done
+		[ "$found" = 0 ] && echo "(empty - the previous boot did not reach pstore init)"
+	else
+		echo "(no /sys/fs/pstore)"
+	fi
+	echo "=== end of pstore ==="
 } > "$LOG" 2>&1
 
 persisted=""
