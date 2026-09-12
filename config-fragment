@@ -66,6 +66,12 @@ CONFIG_VT_CONSOLE=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
 CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
 CONFIG_LOGO=y
+# The penguin itself: fbcon draws one per online CPU into the framebuffer. That
+# is a diagnostic as much as a decoration - penguins on the panel mean the
+# kernel got as far as fbcon (and say how many CPUs came up), and a screen that
+# goes black with nothing after it means the crash is at or after this point.
+# CONFIG_LOGO=y alone draws nothing.
+CONFIG_LOGO_LINUX_CLUT224=y
 
 # --- ttyGS0 USB virtual serial console (configfs acm gadget) ---
 CONFIG_USB_CONFIGFS_ACM=y
