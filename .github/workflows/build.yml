@@ -53,6 +53,7 @@ jobs:
             bison \
             ccache \
             cpio \
+            dosfstools \
             flex \
             kmod \
             libelf-dev \
@@ -181,43 +182,19 @@ jobs:
           # write path into UFS, and this is also where the initramfs writes
           # dmesg-mainline.txt back out for us to read from Android.
           #
-          # Written to the device from the Android side:
-          #   adb push out/bootb.img /data/local/tmp/
-          #   adb shell su -c 'dd if=/data/local/tmp/bootb.img \
-          #                        of=/dev/block/by-name/boot_b bs=1M'
+          # The image itself is built by bootb/mkfat.sh, which explains why the
+          # sector size has to be 4096 and verifies the result. It is a script
+          # rather than inline commands here because the restage workflow
+          # rebuilds the same image in two minutes instead of twenty.
+          #
+          # Flashed with:  fastboot flash boot_b out/bootb.img
           set -euo pipefail
-          # 4096-byte sectors, matching the UFS LUN's logical block size. This
-          # is not cosmetic: U-Boot's FAT driver compares the FAT's sector size
-          # with the device's block size, and a 512-byte-sector FAT on a
-          # 4096-byte-block device reads at the wrong offsets - sysboot mounts
-          # the filesystem, cannot read /extlinux/extlinux.conf, and reports
-          #   FAT sector size mismatch (fs=512, dev=4096)
-          #   Error reading config file
-          # CONFIG_FS_FAT_HANDLE_SECTOR_SIZE_MISMATCH (now enabled in
-          # qcom_nx809j_defconfig) makes a mismatch survivable, but agreeing on
-          # the geometry is the honest fix.
-          SZ_MB=80
-          SECTORS=$((SZ_MB * 1024 * 1024 / 4096))
-          rm -f out/bootb.img
-          mformat -C -i out/bootb.img -S 4096 -T "$SECTORS" -v NX809J ::
-          mmd -i out/bootb.img ::/extlinux
-          # Uncompressed Image on purpose: booti-ing a raw arm64 Image is the
-          # path this U-Boot fork is already proven on, and SYS_BOOTM_LEN is
-          # 128 MiB, so compressing buys nothing we need.
-          mcopy -i out/bootb.img kernel/arch/arm64/boot/Image                      ::/Image
-          mcopy -i out/bootb.img kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb ::/nubia-nx809j.dtb
-          mcopy -i out/bootb.img initramfs.cpio.gz                                 ::/initramfs.cpio.gz
-          mcopy -i out/bootb.img bootb/extlinux.conf                               ::/extlinux/extlinux.conf
-          # Assert the two facts the device depends on, rather than discovering
-          # them on a panel that may not even be readable. (The check lives in a
-          # script rather than a heredoc here: a heredoc body has to be indented
-          # to match the YAML block, and getting that wrong makes the whole
-          # workflow unparseable - GitHub then reports a failure with no jobs at
-          # all, which is exactly what a heredoc written at column 0 did.)
-          python3 bootb/check-fat.py out/bootb.img 100663296 4096
-          echo "--- bootb.img contents ---"
-          mdir -i out/bootb.img -/ ::
-          ls -lh out/bootb.img
+          mkdir -p out
+          bash bootb/mkfat.sh \
+            kernel/arch/arm64/boot/Image \
+            kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb \
+            initramfs.cpio.gz \
+            out/bootb.img 80
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

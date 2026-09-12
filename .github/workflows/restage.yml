@@ -1,0 +1,90 @@
+name: Restage boot_b FAT
+
+# Rebuilds ONLY the boot_b staging FAT, from an existing kernel build's
+# Image.gz + dtb plus a freshly built initramfs. The filesystem geometry is
+# where the interesting failures have been, and iterating on it through the
+# full kernel workflow costs ~20 minutes a go; this takes about two.
+#
+# The output is the same bootb.img the kernel workflow produces, so it is
+# flashed the same way: fastboot flash boot_b out/bootb.img
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "kernel workflow run id to take Image.gz + dtb from (blank = newest successful)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  fat:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            dosfstools \
+            file \
+            flex \
+            libssl-dev \
+            mtools \
+            python3
+
+      - name: Find the kernel run to take the Image from
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rid="${{ inputs.run_id }}"
+          if [ -z "$rid" ]; then
+            rid=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                    --status success --limit 1 --json databaseId \
+                    --jq '.[0].databaseId')
+          fi
+          [ -n "$rid" ] || { echo "!! no successful kernel run found"; exit 1; }
+          echo "using kernel run $rid"
+          echo "run_id=$rid" >> "$GITHUB_OUTPUT"
+
+      - name: Download that run's artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nubia-nx809j-bootimg
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: prev
+
+      - name: Build initramfs
+        run: bash initramfs/build-initramfs.sh
+
+      - name: Build the staging FAT (4096-byte sectors)
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          gunzip -c prev/Image.gz > out/Image
+          ls -l out/Image
+          bash bootb/mkfat.sh out/Image prev/nubia-nx809j.dtb initramfs.cpio.gz out/bootb.img 80
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nubia-nx809j-bootb-fat
+          path: |
+            out/bootb.img
+            out/Image
+          if-no-files-found: error
+          retention-days: 30
