@@ -36,7 +36,7 @@ env:
   #   main   = the port (upstream + NX809J board support)
   #   master = pristine upstream, the fork's base (8dbe57ba648)
   UBOOT_REPO: https://github.com/code002-2/uboot
-  UBOOT_DEFAULT_REF: adf039d7ea49ff92b488acfc3ef7c989b60ba1de
+  UBOOT_DEFAULT_REF: 65712c5865559f0be2ff55e3cbf7fa0a92b87df7
 
 jobs:
   uboot:

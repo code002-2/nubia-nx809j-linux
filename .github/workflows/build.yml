@@ -3,8 +3,26 @@ name: Build kernel + boot.img
 on:
   push:
     branches: [main]
+    # Only rebuild for things that actually feed this build. The kernel source
+    # lives in its own repo, so every file here is kernel-relevant except the
+    # U-Boot packaging bits - and without this filter a one-line U-Boot change
+    # kicked off a 20 minute kernel rebuild.
+    paths:
+      - "config-fragment"
+      - "initramfs/**"
+      - "scripts/**"
+      - "bootb/**"
+      - "build.sh"
+      - ".github/workflows/build.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "config-fragment"
+      - "initramfs/**"
+      - "scripts/**"
+      - "bootb/**"
+      - "build.sh"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
     inputs:
       kernel_ref:
