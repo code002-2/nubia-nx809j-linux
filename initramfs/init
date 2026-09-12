@@ -2,12 +2,16 @@
 # /init for the minimal busybox initramfs.
 #
 # This device has no usable console (no UART pads; the display needs the DRM
-# path), so instead of relying on one we PERSIST the kernel log: dmesg is
-# written to the userdata (f2fs) partition as /dmesg-mainline.txt and read
-# back from Android with
-#     adb shell su -c 'cat /data/dmesg-mainline.txt'
-# An attempt is also made to bring up the ttyGS0 USB serial gadget as a live
-# console.
+# path), so we PERSIST the kernel log instead of printing it. Two independent
+# sinks are attempted so that the result is unambiguous:
+#
+#   1) /data/dmesg-mainline.txt            (userdata, f2fs/ext4)  <- preferred
+#   2) raw dump at the start of the spare slot-B partition
+#      (boot_b), readable from Android with
+#        adb shell su -c 'dd if=/dev/block/by-name/boot_b bs=65536 count=16' > log.bin
+#
+# If NEITHER happened, the kernel never reached userspace at all and is stuck
+# inside a driver, not at /init.
 
 mount -t proc     none /proc
 mount -t sysfs    none /sys
@@ -16,10 +20,9 @@ mount -t tmpfs    none /tmp
 mkdir -p /dev/pts /dev/block/by-name /sys/kernel/config /mnt/data
 mount -t devpts   none /dev/pts
 
-# ------------------------------------------------------------ log capture ---
-# /dev/block/by-name/* is normally created by Android's ueventd, which does not
-# exist here. The kernel does export PARTNAME= in each block device's uevent,
-# so build the links from that ourselves.
+# ------------------------------------------------------------ by-name links --
+# Android's ueventd normally creates these; it does not exist here. The kernel
+# exports PARTNAME= in each block device uevent, so build them ourselves.
 for d in /sys/class/block/sd*; do
 	[ -f "$d/uevent" ] || continue
 	name="$(basename "$d")"
@@ -27,30 +30,53 @@ for d in /sys/class/block/sd*; do
 	[ -n "$partname" ] && ln -sf "/dev/$name" "/dev/block/by-name/$partname" 2>/dev/null
 done
 
+# ------------------------------------------------------------ build the log --
+LOG=/tmp/dmesg-mainline.txt
 {
 	echo "=== Nubia NX809J mainline Linux - captured kernel log ==="
+	echo "--- uname ---"
 	uname -a
 	echo "--- /proc/cmdline ---"
 	cat /proc/cmdline 2>/dev/null
 	echo "--- /proc/partitions ---"
 	cat /proc/partitions 2>/dev/null
+	echo "--- by-name ---"
+	ls -l /dev/block/by-name 2>/dev/null
 	echo "--- dmesg ---"
 	dmesg
-} > /tmp/dmesg-mainline.txt 2>&1
+} > "$LOG" 2>&1
 
-# Persist to userdata (f2fs). Try the by-name link first, then any *userdata*
-# link (in case PARTNAME differs).
-persisted=0
-for cand in /dev/block/by-name/userdata $(ls /dev/block/by-name/*userdata* 2>/dev/null); do
-	[ -b "$cand" ] || continue
-	if mount -t f2fs -o rw "$cand" /mnt/data 2>/dev/null; then
-		cp /tmp/dmesg-mainline.txt /mnt/data/dmesg-mainline.txt 2>/dev/null && persisted=1
+persisted=""
+
+# ---------------------------------------------- sink 1: userdata filesystem --
+# NOTE: mounting Android's userdata rw and writing a plaintext file is safe in
+# the normal case (FBE is per-file), but a f2fs feature mismatch could damage
+# /data - only done because there is no other reachable sink.
+for t in f2fs ext4; do
+	[ -b /dev/block/by-name/userdata ] || break
+	if mount -t "$t" -o rw /dev/block/by-name/userdata /mnt/data 2>/dev/null; then
+		cp "$LOG" /mnt/data/dmesg-mainline.txt 2>/dev/null && persisted="userdata($t)"
 		sync
 		umount /mnt/data 2>/dev/null
-		[ "$persisted" = "1" ] && break
+		[ -n "$persisted" ] && break
 	fi
 done
-echo "dmesg persist: $persisted"
+
+# ------------------------------------------------ sink 2: raw spare slot-B --
+# Writes the log over the head of the unused B-slot boot partition. Recoverable:
+# re-flash boot_b afterwards (or flash the slot-A backup image to boot_b).
+if [ -z "$persisted" ]; then
+	for cand in /dev/block/by-name/boot_b /dev/block/by-name/init_boot_b /dev/block/by-name/vendor_boot_b; do
+		[ -b "$cand" ] || continue
+		if dd if="$LOG" of="$cand" bs=65536 count=16 2>/dev/null; then
+			sync
+			persisted="raw($cand)"
+			break
+		fi
+	done
+fi
+
+echo "dmesg persist: ${persisted:-NONE}"
 
 # ------------------------------------------------------------- usb gadget ---
 try_usb_gadget() {
@@ -58,7 +84,7 @@ try_usb_gadget() {
 	G=/sys/kernel/config/usb_gadget/nx809j
 	mkdir -p "$G/functions/acm.usb0" "$G/configs/c.1" || return 1
 	echo 0x18d1 > "$G/idVendor"
-	echo 0x4ee7 > "$G/idProduct"
+	echo 0x4ee4 > "$G/idProduct"
 	mkdir -p "$G/strings/0x409"
 	echo nx809j-mainline	> "$G/strings/0x409/product"
 	echo code002-2		> "$G/strings/0x409/manufacturer"
@@ -68,7 +94,6 @@ try_usb_gadget() {
 }
 try_usb_gadget || echo "WARN: usb gadget setup failed"
 
-# If the gadget came up, open an extra shell on it in the background.
 if [ -e /dev/ttyGS0 ]; then
 	setsid sh -c 'exec cttyhack sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1' &
 fi
@@ -78,7 +103,7 @@ echo
 echo "============================================================"
 echo " Nubia NX809J (SM8850 / kaanapali) mainline Linux initramfs"
 echo " kernel: $(uname -r)"
-echo " dmesg persisted to /data/dmesg-mainline.txt: $persisted"
+echo " dmesg persist: ${persisted:-NONE}"
 echo "============================================================"
 echo
 
