@@ -1,34 +1,76 @@
 #!/bin/sh
 # /init for the minimal busybox initramfs.
-# Mounts pseudo-filesystems, brings up the ttyGS0 USB serial gadget (so a
-# PC sees a COM port over the USB-C cable -- no physical UART pads needed),
-# and drops to a shell on the active console.
+#
+# This device has no usable console (no UART pads; the display needs the DRM
+# path), so instead of relying on one we PERSIST the kernel log: dmesg is
+# written to the userdata (f2fs) partition as /dmesg-mainline.txt and read
+# back from Android with
+#     adb shell su -c 'cat /data/dmesg-mainline.txt'
+# An attempt is also made to bring up the ttyGS0 USB serial gadget as a live
+# console.
 
 mount -t proc     none /proc
 mount -t sysfs    none /sys
 mount -t devtmpfs none /dev 2>/dev/null || mount -t tmpfs none /dev
 mount -t tmpfs    none /tmp
-mkdir -p /dev/pts /sys/kernel/config
+mkdir -p /dev/pts /dev/block/by-name /sys/kernel/config /mnt/data
 mount -t devpts   none /dev/pts
 
+# ------------------------------------------------------------ log capture ---
+# /dev/block/by-name/* is normally created by Android's ueventd, which does not
+# exist here. The kernel does export PARTNAME= in each block device's uevent,
+# so build the links from that ourselves.
+for d in /sys/class/block/sd*; do
+	[ -f "$d/uevent" ] || continue
+	name="$(basename "$d")"
+	partname="$(sed -n 's/^PARTNAME=//p' "$d/uevent" 2>/dev/null)"
+	[ -n "$partname" ] && ln -sf "/dev/$name" "/dev/block/by-name/$partname" 2>/dev/null
+done
+
+{
+	echo "=== Nubia NX809J mainline Linux - captured kernel log ==="
+	uname -a
+	echo "--- /proc/cmdline ---"
+	cat /proc/cmdline 2>/dev/null
+	echo "--- /proc/partitions ---"
+	cat /proc/partitions 2>/dev/null
+	echo "--- dmesg ---"
+	dmesg
+} > /tmp/dmesg-mainline.txt 2>&1
+
+# Persist to userdata (f2fs). Try the by-name link first, then any *userdata*
+# link (in case PARTNAME differs).
+persisted=0
+for cand in /dev/block/by-name/userdata $(ls /dev/block/by-name/*userdata* 2>/dev/null); do
+	[ -b "$cand" ] || continue
+	if mount -t f2fs -o rw "$cand" /mnt/data 2>/dev/null; then
+		cp /tmp/dmesg-mainline.txt /mnt/data/dmesg-mainline.txt 2>/dev/null && persisted=1
+		sync
+		umount /mnt/data 2>/dev/null
+		[ "$persisted" = "1" ] && break
+	fi
+done
+echo "dmesg persist: $persisted"
+
+# ------------------------------------------------------------- usb gadget ---
 try_usb_gadget() {
-  mount -t configfs none /sys/kernel/config 2>/dev/null || return 1
-  G=/sys/kernel/config/usb_gadget/nx809j
-  mkdir -p "$G/functions/acm.usb0" "$G/configs/c.1" || return 1
-  echo 0x18d1 > "$G/idVendor"
-  echo 0x4ee7 > "$G/idProduct"
-  mkdir -p "$G/strings/0x409"
-  echo nx809j-mainline   > "$G/strings/0x409/product"
-  echo code002-2         > "$G/strings/0x409/manufacturer"
-  ln -sf functions/acm.usb0 "$G/configs/c.1/f1"
-  UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
-  [ -n "$UDC" ] && echo "$UDC" > "$G/UDC"
+	mount -t configfs none /sys/kernel/config 2>/dev/null || return 1
+	G=/sys/kernel/config/usb_gadget/nx809j
+	mkdir -p "$G/functions/acm.usb0" "$G/configs/c.1" || return 1
+	echo 0x18d1 > "$G/idVendor"
+	echo 0x4ee7 > "$G/idProduct"
+	mkdir -p "$G/strings/0x409"
+	echo nx809j-mainline	> "$G/strings/0x409/product"
+	echo code002-2		> "$G/strings/0x409/manufacturer"
+	ln -sf functions/acm.usb0 "$G/configs/c.1/f1"
+	UDC="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
+	[ -n "$UDC" ] && echo "$UDC" > "$G/UDC"
 }
 try_usb_gadget || echo "WARN: usb gadget setup failed"
 
 # If the gadget came up, open an extra shell on it in the background.
 if [ -e /dev/ttyGS0 ]; then
-  setsid sh -c 'exec cttyhack sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1' &
+	setsid sh -c 'exec cttyhack sh < /dev/ttyGS0 > /dev/ttyGS0 2>&1' &
 fi
 
 # A little banner
@@ -36,6 +78,7 @@ echo
 echo "============================================================"
 echo " Nubia NX809J (SM8850 / kaanapali) mainline Linux initramfs"
 echo " kernel: $(uname -r)"
+echo " dmesg persisted to /data/dmesg-mainline.txt: $persisted"
 echo "============================================================"
 echo
 
