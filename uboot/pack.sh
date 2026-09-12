@@ -59,10 +59,30 @@ python3 "$MKBI" \
   -o "$OUT"
 
 echo "==> boot.img: $OUT ($(du -h "$OUT" | cut -f1))"
+
+# --- verify -----------------------------------------------------------------
+# AOSP mkbootimg packs the header fields with pack('I', ...) - *native* byte
+# order, so the header is little-endian in practice. That matches the stock
+# boot.img on this device (header_size reads 1584, not 805699584). Confirm it
+# rather than assume it: a header ABL cannot parse is a silent hang at the
+# splash screen with nothing on the panel.
 python3 - "$OUT" <<'PY'
 import struct, sys
-b = open(sys.argv[1], 'rb').read(4096)
-magic, ksize, rsize, osv, hsize, r0, r1, r2, r3, hver = struct.unpack_from('>10I', b, 0)
-print("==> header: magic=%s kernel=%d ramdisk=%d os_version=%#x header_size=%d version=%d"
-      % (magic.decode(), ksize, rsize, osv, hsize, hver))
+path = sys.argv[1]
+blob = open(path, "rb").read(4096)
+magic = blob[:8]
+# v3/v4 header: magic[8] kernel_size os_version header_size reserved[4]
+#               header_version cmdline[1536] (header_version at offset 40)
+ksize, rsize, osv, hsize = struct.unpack_from("<4I", blob, 8)
+hver, = struct.unpack_from("<I", blob, 40)
+cmdline = blob[44:44 + 1536].split(b"\x00")[0]
+print("==> header: magic=%s version=%d kernel_size=%d ramdisk_size=%d "
+      "os_version=%#x header_size=%d cmdline=%r"
+      % (magic.decode(), hver, ksize, rsize, osv, hsize, cmdline))
+assert magic == b"ANDROID!", magic
+assert hver == 4, hver
+assert hsize == 1584, hsize
+kernel = open(path, "rb").read()[4096:4096 + 2]
+assert kernel == b"\x1f\x8b", kernel          # gzip payload ABL can inflate
+print("==> payload at offset 4096 is gzip: OK")
 PY
