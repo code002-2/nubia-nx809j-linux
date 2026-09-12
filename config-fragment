@@ -44,9 +44,23 @@ CONFIG_PHY_QCOM_M31_EUSB=y
 CONFIG_PHY_QCOM_EUSB2_REPEATER=y
 CONFIG_PHY_QCOM_QMP_COMBO=y
 
-# --- Screen console (no physical UART available on this device:
-#     fbcon drives the panel via fbdev emulation; kernel boot log also
-#     goes to the ttyGS0 USB serial gadget for host-side debugging) ---
+# --- On-panel console via the bootloader's live scanout ---
+# The panel is the ONLY console this board has. ABL leaves the DPU scanning
+# out of the splash buffer, and with MDSS forced off in the board DT nothing
+# reprograms it, so the buffer stays live. FB_SIMPLE maps that region and
+# draws the kernel log into it; fbdev gives us fb0 and fbcon binds to it, so
+# `console=tty1` works. This is the same trick U-Boot uses for its own
+# console - and unlike the DRM/MSM path it never touches a running display
+# pipeline.
+#
+# The board DT also splits the splash carve-out out of /memory: simplefb
+# does request_mem_region() on its framebuffer, which fails with -EBUSY for
+# a region inside the busy "System RAM" iomem resource.
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+
+# --- Screen console (DRM path; kept for later, MDSS is off in the DT for
+#     bring-up: msm_mdss_enable() on a live bootloader scanout stalls) ---
 CONFIG_VT=y
 CONFIG_VT_CONSOLE=y
 CONFIG_FRAMEBUFFER_CONSOLE=y

@@ -1,17 +1,22 @@
 #!/bin/sh
 # /init for the minimal busybox initramfs.
 #
-# This device has no usable console (no UART pads; the display needs the DRM
-# path), so we PERSIST the kernel log instead of printing it. Two independent
-# sinks are attempted so that the result is unambiguous:
+# The panel is the primary console now (a simple-framebuffer on the buffer ABL
+# left the DPU scanning, see /chosen in nubia-nx809j.dts), but a kernel log on
+# a screen cannot be greped, so the log is also PERSISTED to two independent
+# sinks so that the result is unambiguous:
 #
-#   1) /data/dmesg-mainline.txt            (userdata, f2fs/ext4)  <- preferred
-#   2) raw dump at the start of the spare slot-B partition
-#      (boot_b), readable from Android with
-#        adb shell su -c 'dd if=/dev/block/by-name/boot_b bs=65536 count=16' > log.bin
+#   1) /data/dmesg-mainline.txt   (userdata, f2fs/ext4)              <- preferred
+#   2) /dmesg-mainline.txt        (vfat on boot_b - the same FAT that U-Boot
+#      booted this kernel from; readable by mounting that partition on Android,
+#      or directly from U-Boot with `fatls`/`fatload`)
 #
 # If NEITHER happened, the kernel never reached userspace at all and is stuck
-# inside a driver, not at /init.
+# inside a driver, not at /init - which is what the panel console is for.
+#
+# There is deliberately no raw-block fallback any more: it wrote over the head
+# of an unused slot-B partition, and boot_b is now the staging filesystem we
+# boot from.
 
 mount -t proc     none /proc
 mount -t sysfs    none /sys
@@ -62,18 +67,16 @@ for t in f2fs ext4; do
 	fi
 done
 
-# ------------------------------------------------ sink 2: raw spare slot-B --
-# Writes the log over the head of the unused B-slot boot partition. Recoverable:
-# re-flash boot_b afterwards (or flash the slot-A backup image to boot_b).
+# -------------------------------------- sink 2: vfat on the boot_b staging FS --
+# boot_b carries the FAT filesystem U-Boot loaded this kernel from. Writing the
+# log as a FILE keeps that filesystem intact, unlike the raw block dump this
+# replaces. Read it back by mounting boot_b (Android) or with `fatls` (U-Boot).
 if [ -z "$persisted" ]; then
-	for cand in /dev/block/by-name/boot_b /dev/block/by-name/init_boot_b /dev/block/by-name/vendor_boot_b; do
-		[ -b "$cand" ] || continue
-		if dd if="$LOG" of="$cand" bs=65536 count=16 2>/dev/null; then
-			sync
-			persisted="raw($cand)"
-			break
-		fi
-	done
+	if mount -t vfat -o rw /dev/block/by-name/boot_b /mnt/data 2>/dev/null; then
+		cp "$LOG" /mnt/data/dmesg-mainline.txt 2>/dev/null && persisted="boot_b(vfat)"
+		sync
+		umount /mnt/data 2>/dev/null
+	fi
 fi
 
 echo "dmesg persist: ${persisted:-NONE}"

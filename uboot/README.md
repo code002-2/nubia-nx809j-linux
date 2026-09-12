@@ -101,15 +101,43 @@ fastboot flash init_boot_a backup/init_boot_a.img
 
 `fastboot boot` is not implemented by this bootloader; only flashing works.
 
+## Booting Linux from boot_b
+
+U-Boot cannot write to UFS (this build's storage stack is read-only by
+construction), so the kernel is staged where U-Boot can *read* it: `boot_b`,
+the inactive A/B slot. Nothing ever boots from it, so it is free real estate.
+
+The kernel workflow builds `out/bootb.img`, an 80 MiB FAT filesystem holding
+`Image`, `nubia-nx809j.dtb`, `initramfs.cpio.gz` and
+`/extlinux/extlinux.conf` (`bootb/extlinux.conf` in this repo), and that image
+is written into boot_b from the Android side:
+
+```sh
+adb push out/bootb.img /data/local/tmp/
+adb shell su -c 'dd if=/data/local/tmp/bootb.img of=/dev/block/by-name/boot_b bs=1M'
+```
+
+`bootcmd` in `board/qualcomm/nx809j.env` then looks boot_b's partition up by
+PARTLABEL and runs `sysboot` on it. On the Android side boot_b is
+`/dev/block/sde55` — LUN 4, partition 55 — so U-Boot should report 55 on
+`scsi 4`; if it does not, the failed attempt falls through to the other LUNs
+and says so on the panel.
+
+The same FAT is the return channel: `/init` writes its `dmesg-mainline.txt`
+into it, so a boot that reaches userspace yields a machine-readable log that
+Android can read back by mounting boot_b.
+
 ## Status / next steps
 
-* [ ] Confirm the video console: banner plus the `bdinfo`/`clk dump`/`part list`
-      dump on the panel.
-* [ ] Pin down the ABL splash geometry (assumed 1216x2688, the panel's native
-      mode, 32bpp `a8r8g8b8`).
-* [ ] Boot a kernel: stage `Image`, the DTB and the initramfs plus
-      `/extlinux/extlinux.conf` into an unused GPT partition (e.g. `boot_b`)
-      and `sysboot` from there, mirroring the OnePlus 15 `ex01_esp` flow.
-* [ ] Runtime DT fixups so the kernel gets a usable `/memory` and
-      `/reserved-memory` (U-Boot can patch the tree it hands over, which is a
-      much better place for that than the kernel's static DTS).
+* [x] Video console on the panel — banner plus the bring-up dump, no errors.
+* [x] UFS read + GPT parsing confirmed from the U-Boot console.
+* [ ] Boot Linux from boot_b and get *Linux's* log on the panel via
+      `simple-framebuffer` on the buffer ABL is scanning out (the board DT now
+      carries `/chosen/framebuffer@fc800000`, splits the splash carve-out out
+      of `/memory` so `simplefb`'s `request_mem_region()` does not fail against
+      busy System RAM, and forces MDSS off so nothing reprograms a live
+      pipeline).
+* [ ] Runtime DT fixups: U-Boot can patch the tree it hands over, which is a
+      much better place for the RAM map than the kernel's static DTS.
+* [ ] Later: USB gadget in U-Boot for a real interactive console; GPU, WiFi,
+      audio.

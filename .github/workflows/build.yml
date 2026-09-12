@@ -39,6 +39,7 @@ jobs:
             kmod \
             libelf-dev \
             libssl-dev \
+            mtools \
             python3
 
       - name: Clone kernel source
@@ -92,7 +93,16 @@ jobs:
           ./scripts/config --file .config --disable EFI --disable EFI_STUB
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" olddefconfig
           # dump resolved configs for debugging (display chain especially)
-          grep -E "^CONFIG_(DRM|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
+          grep -E "^CONFIG_(DRM|FB|BACKLIGHT|CLK_KAANAPALI|PINCTRL_|SCSI_UFS|USB_DWC3|PHY_QCOM)" .config | sort || true
+          # The panel console is the ONLY console on this board: a kernel
+          # without it boots with no output anywhere and the test teaches us
+          # nothing. FB_SIMPLE is the one that matters, and it silently falls
+          # away if DRM_SIMPLEDRM is on (depends on !DRM_SIMPLEDRM), so assert
+          # it rather than discover its absence on the device.
+          for opt in CONFIG_FB_SIMPLE CONFIG_FRAMEBUFFER_CONSOLE CONFIG_VT_CONSOLE; do
+            grep -q "^${opt}=y" .config || { echo "!! ${opt} did not stick"; exit 1; }
+            echo "==> ${opt}=y"
+          done
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz dtbs
           echo "--- ccache stats after build ---"
           ccache -s || true
@@ -115,6 +125,35 @@ jobs:
           cp kernel/System.map out/ 2>/dev/null || true
           cp kernel/vmlinux out/ 2>/dev/null || true
           cp kernel/.config out/ 2>/dev/null || true
+
+      - name: Package boot_b staging FAT
+        run: |
+          # boot_b is the INACTIVE A/B slot: nothing ever boots from it, so it
+          # is free scratch space. U-Boot reads the kernel out of it with
+          # sysboot (see uboot/board/qualcomm/nx809j.env) instead of needing a
+          # write path into UFS, and this is also where the initramfs writes
+          # dmesg-mainline.txt back out for us to read from Android.
+          #
+          # Written to the device from the Android side:
+          #   adb push out/bootb.img /data/local/tmp/
+          #   adb shell su -c 'dd if=/data/local/tmp/bootb.img \
+          #                        of=/dev/block/by-name/boot_b bs=1M'
+          set -euo pipefail
+          SZ_MB=80
+          SECTORS=$((SZ_MB * 1024 * 1024 / 512))
+          rm -f out/bootb.img
+          mformat -C -i out/bootb.img -T "$SECTORS" -v NX809J ::
+          mmd -i out/bootb.img ::/extlinux
+          # Uncompressed Image on purpose: booti-ing a raw arm64 Image is the
+          # path this U-Boot fork is already proven on, and SYS_BOOTM_LEN is
+          # 128 MiB, so compressing buys nothing we need.
+          mcopy -i out/bootb.img kernel/arch/arm64/boot/Image                      ::/Image
+          mcopy -i out/bootb.img kernel/arch/arm64/boot/dts/qcom/nubia-nx809j.dtb ::/nubia-nx809j.dtb
+          mcopy -i out/bootb.img initramfs.cpio.gz                                 ::/initramfs.cpio.gz
+          mcopy -i out/bootb.img bootb/extlinux.conf                               ::/extlinux/extlinux.conf
+          echo "--- bootb.img contents ---"
+          mdir -i out/bootb.img -/ ::
+          ls -lh out/bootb.img
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
