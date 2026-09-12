@@ -116,6 +116,20 @@ CONFIG_IOMMU_SUPPORT=y
 CONFIG_ARM_SMMU=y
 CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y
 
+# --- Watchdog (CRITICAL, and it cost a whole bring-up to find) ---
+# XBL arms the APSS watchdog before handing over to the kernel; the downstream
+# kernel keeps it alive, and mainline does too - but only if a driver actually
+# binds to it. The arm64 defconfig has this as =m and this kernel loads no
+# modules at all, so the watchdog node sat there with no driver, nobody petted
+# it, and about thirty seconds into Linux the SoC reset itself. On this device
+# a reset does not reboot: the vendor memory-dump screen replaces the panel and
+# takes the kernel log with it, which is exactly what the crash looked like -
+# penguins and a few seconds of log, then the dump UI, with no panic message
+# anywhere because nothing panicked.
+CONFIG_WATCHDOG=y
+CONFIG_WATCHDOG_CORE=y
+CONFIG_QCOM_WDT=y
+
 # --- Qualcomm SoC glue (mostly =y in defconfig already; kept explicit) ---
 CONFIG_QCOM_RPMH=y
 CONFIG_QCOM_CLK_RPMH=y
