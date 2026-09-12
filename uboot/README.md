@@ -30,17 +30,30 @@ panel.
 This is also why the mainline Linux DT must *not* use `simple-framebuffer`
 (it stalls on `msm_mdss_enable()`/NoC); U-Boot never touches MDSS.
 
-## Files
+## Where the source lives
 
-| Path | What it is |
+The port itself lives in its own fork:
+**[`code002-2/uboot`](https://github.com/code002-2/uboot)** — a full-history
+fork of `infiniti-mainline/u-boot`, so the whole build chain is self-hosted.
+
+| Branch | What it is |
 | --- | --- |
-| `arch/arm/dts/kaanapali-nubia-nx809j.dts` | board devicetree: `simple-framebuffer` for the console, GCC/TCSR/RPMh clock controllers, the apps SMMU and the UFS PHY + host |
-| `configs/qcom_nx809j_defconfig` | `qcom_nx809j_defconfig` — the infiniti defconfig with the board DT and env file swapped |
-| `board/qualcomm/nx809j.env` | default environment: video console routing and a bring-up `bootcmd` that dumps the ABL RAM map, clocks and UFS/GPT layout onto the panel |
-| `pack.sh` | wraps `u-boot.bin` into a boot image (header v4, 4 KiB pages) |
+| `main` | the port: upstream U-Boot + kaanapali SoC support + the NX809J board support |
+| `master` | pristine upstream, the fork's base (`8dbe57ba648`) |
 
-These mirror the U-Boot tree layout so CI can drop them straight in with
-`cp -av uboot/arch uboot/board uboot/configs uboot-src/`.
+`.github/workflows/uboot.yml` clones that fork at a pinned commit and builds it
+**exactly as pushed** — it does not patch a foreign tree from this repo any
+more, it only verifies the three board files are present and still say what we
+think they say.
+
+| File in the fork | What it is |
+| --- | --- |
+| `arch/arm/dts/kaanapali-nubia-nx809j.dts` | board devicetree: `simple-framebuffer` for the console, GCC/TCSR/RPMh clock controllers, the apps SMMU and the UFS PHY + host, plus the `/memory` safety net |
+| `configs/qcom_nx809j_defconfig` | `qcom_nx809j_defconfig` — the infiniti defconfig with the board DT and env file swapped, `CMD_SCSI` enabled for the UFS survey |
+| `board/qualcomm/nx809j.env` | default environment: video console routing and the bring-up `bootcmd` |
+
+What stays here is only the packaging helper, `pack.sh`, because it turns the
+built `u-boot.bin` into the Android boot image ABL chainloads.
 
 ### The one deviation from the reference port: `/memory`
 

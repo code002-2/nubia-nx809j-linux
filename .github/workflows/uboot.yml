@@ -31,11 +31,12 @@ permissions:
   contents: read
 
 env:
-  # Pinned to the oneplus-15 tip this port was written against. The tree is
-  # upstream U-Boot + 8 commits (Kaanapali clock driver, UFS PHY/host, hyp
-  # SMMU, the infiniti board); nothing here touches aarm64 SoC code.
-  UBOOT_REPO: https://github.com/infiniti-mainline/u-boot
-  UBOOT_DEFAULT_REF: 8c8a9965729a05b6b0da2f64b8eb3afbe3301a83
+  # Built from our own fork: a full-history fork of infiniti-mainline/u-boot
+  # with the NX809J board support on top, so the whole chain is self-hosted.
+  #   main   = the port (upstream + NX809J board support)
+  #   master = pristine upstream, the fork's base (8dbe57ba648)
+  UBOOT_REPO: https://github.com/code002-2/uboot
+  UBOOT_DEFAULT_REF: 6b3ffac0868394cdf679ea673d503ccf1b54353b
 
 jobs:
   uboot:
@@ -79,14 +80,26 @@ jobs:
           git checkout "$REF" 2>/dev/null || git checkout FETCH_HEAD
           git log --oneline -3
 
-      - name: Apply NX809J board support
+      - name: Verify NX809J board support is present
         run: |
-          # The port lives in this repo under uboot/, mirroring the U-Boot
-          # tree layout, so it can be dropped straight in.
-          cp -av uboot/arch uboot/board uboot/configs uboot-src/
-          ls -l uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts \
-                uboot-src/configs/qcom_nx809j_defconfig \
-                uboot-src/board/qualcomm/nx809j.env
+          # The port lives in the fork itself, so this builds exactly what was
+          # pushed to code002-2/uboot rather than patching a foreign tree from
+          # this repo. Check the three files are there and still say what we
+          # think they say - a silently missing board file produces a U-Boot
+          # that boots to a black panel, which on this device is
+          # indistinguishable from a dead port.
+          set -e
+          for f in arch/arm/dts/kaanapali-nubia-nx809j.dts \
+                   configs/qcom_nx809j_defconfig \
+                   board/qualcomm/nx809j.env ; do
+            [ -s "uboot-src/$f" ] || { echo "!! missing uboot-src/$f"; exit 1; }
+            echo "==> $f present ($(stat -c %s "uboot-src/$f") bytes)"
+          done
+          grep -q 'kaanapali-nubia-nx809j' uboot-src/configs/qcom_nx809j_defconfig
+          grep -q 'CONFIG_CMD_SCSI=y'      uboot-src/configs/qcom_nx809j_defconfig
+          grep -q 'scsi scan'              uboot-src/board/qualcomm/nx809j.env
+          grep -q 'memory {'               uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts
+          git -C uboot-src log --oneline -3
 
       - name: ccache
         uses: actions/cache@v4

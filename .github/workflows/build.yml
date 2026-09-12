@@ -69,9 +69,25 @@ jobs:
           # ccache: most of our commits only touch the .dts, which leaves every
           # kernel object unchanged, so a warm cache turns the ~10 min full
           # kernel build into ~1-2 min.
+          #
+          # CC MUST BE PASSED ON THE MAKE COMMAND LINE. The kernel's Makefile
+          # does `CC = $(CROSS_COMPILE)gcc` (line 540, a plain assignment), and
+          # a plain makefile assignment silently overrides an *exported* CC -
+          # so the old `export CC="ccache aarch64-linux-gnu-gcc"` was ignored
+          # and ccache was never on the compile path at all. The tell was
+          # `ccache -s` reporting "Hits: 0 / 0, Misses: 0" *after* a full
+          # build: not a cold cache, no cache - the compiler was never wrapped,
+          # the cache directory stayed empty, and actions/cache therefore had
+          # nothing to save. Command-line variables outrank makefile ones, so
+          # CC=... on the make line is what actually takes effect.
           export CCACHE_DIR="$HOME/.cache/ccache"
-          export CCACHE_MAXSIZE=5G
-          export CC="ccache aarch64-linux-gnu-gcc"
+          # 5G never survived: caches are per-repo and compete under a 10 GB
+          # budget, and the kernel ccache had grown into the gigabytes, so
+          # every new save evicted the previous kernel cache. 2G compressed
+          # holds the objects that matter and leaves room for the U-Boot cache.
+          export CCACHE_MAXSIZE=2G
+          export CCACHE_COMPRESS=true
+          ccache -z
           ccache -s || true
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           # Force-enable every =y option from the fragment. Raw `cat >> .config`
@@ -103,9 +119,22 @@ jobs:
             grep -q "^${opt}=y" .config || { echo "!! ${opt} did not stick"; exit 1; }
             echo "==> ${opt}=y"
           done
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz dtbs
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               CC="ccache aarch64-linux-gnu-gcc" \
+               -j"$(nproc)" Image.gz dtbs
           echo "--- ccache stats after build ---"
           ccache -s || true
+          # Prove ccache was actually on the compile path. Without this, a
+          # silently-ignored CC turns every single commit into a 10 minute full
+          # rebuild and nothing anywhere says so - which is exactly what
+          # happened before this check existed. Counted from the cache
+          # directory rather than parsed out of `ccache -s`, whose layout
+          # differs between versions.
+          files=$(find "$CCACHE_DIR" -type f 2>/dev/null | wc -l)
+          size=$(du -sh "$CCACHE_DIR" 2>/dev/null | cut -f1)
+          echo "==> ccache stored ${files} files, ${size:-0}"
+          [ "${files:-0}" -gt 0 ] || {
+            echo "!! ccache stored nothing: CC= is not reaching the compiler"; exit 1; }
 
       - name: Build initramfs
         run: bash initramfs/build-initramfs.sh
