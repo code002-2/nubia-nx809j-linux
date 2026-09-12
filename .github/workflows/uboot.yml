@@ -1,0 +1,139 @@
+name: Build U-Boot (NX809J)
+
+# Builds the U-Boot port for the Nubia Red Magic 11S Pro+ (NX809J, SM8850
+# "kaanapali") on top of infiniti-mainline/u-boot's kaanapali SoC support, and
+# packages it as an Android boot image that the stock ABL chainloads.
+#
+# This is the console bring-up path: U-Boot's video console draws into the
+# splash buffer ABL leaves the DPU scanning out (0xfc800000), so it works with
+# no display driver and gives the board its first visible console - no UART
+# pads, no USB gadget.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "uboot/**"
+      - ".github/workflows/uboot.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "uboot/**"
+      - ".github/workflows/uboot.yml"
+  workflow_dispatch:
+    inputs:
+      uboot_ref:
+        description: "infiniti-mainline/u-boot ref (commit/tag/branch) to build against"
+        required: false
+        default: "8c8a9965729a05b6b0da2f64b8eb3afbe3301a83"
+
+permissions:
+  contents: read
+
+env:
+  # Pinned to the oneplus-15 tip this port was written against. The tree is
+  # upstream U-Boot + 8 commits (Kaanapali clock driver, UFS PHY/host, hyp
+  # SMMU, the infiniti board); nothing here touches aarm64 SoC code.
+  UBOOT_REPO: https://github.com/infiniti-mainline/u-boot
+  UBOOT_DEFAULT_REF: 8c8a9965729a05b6b0da2f64b8eb3afbe3301a83
+
+jobs:
+  uboot:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Install cross toolchain + U-Boot build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            bc \
+            bison \
+            ccache \
+            flex \
+            libgnutls28-dev \
+            libssl-dev \
+            python3 \
+            python3-dev \
+            python3-setuptools \
+            swig \
+            uuid-dev
+
+      - name: Clone U-Boot (kaanapali support)
+        run: |
+          REF="${{ github.event.inputs.uboot_ref }}"
+          [ -n "$REF" ] || REF="$UBOOT_DEFAULT_REF"
+          echo "==> $UBOOT_REPO @ $REF"
+          git init uboot-src
+          cd uboot-src
+          git remote add origin "$UBOOT_REPO"
+          if ! git fetch --depth 1 origin "$REF"; then
+            echo "==> shallow fetch failed, falling back to a full fetch"
+            git fetch origin
+          fi
+          git checkout "$REF" 2>/dev/null || git checkout FETCH_HEAD
+          git log --oneline -3
+
+      - name: Apply NX809J board support
+        run: |
+          # The port lives in this repo under uboot/, mirroring the U-Boot
+          # tree layout, so it can be dropped straight in.
+          cp -av uboot/arch uboot/board uboot/configs uboot-src/
+          ls -l uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts \
+                uboot-src/configs/qcom_nx809j_defconfig \
+                uboot-src/board/qualcomm/nx809j.env
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache-uboot
+          key: ccache-uboot-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-uboot-${{ github.ref }}-
+            ccache-uboot-
+
+      - name: Build U-Boot
+        run: |
+          cd uboot-src
+          export CCACHE_DIR="$HOME/.cache/ccache-uboot"
+          export CCACHE_MAXSIZE=2G
+          ccache -s || true
+          make qcom_nx809j_defconfig
+          # CROSS_COMPILE may legitimately contain spaces - this is U-Boot's
+          # own documented ccache idiom (see board/qualcomm/dragonboard820c).
+          make -j"$(nproc)" CROSS_COMPILE="ccache aarch64-linux-gnu-"
+          echo "--- ccache stats after build ---"
+          ccache -s || true
+          ls -l u-boot.bin u-boot.dtb u-boot.map u-boot-nodtb.bin
+          # Fail loudly if the video console or the storage stack got dropped:
+          # without those the image cannot even show a banner on the panel.
+          grep -E "^(CONFIG_VIDEO_SIMPLE|CONFIG_VIDEO=|CONFIG_UFS_QCOM|CONFIG_CLK_QCOM_KAANAPALI|CONFIG_QCOM_HYP_SMMU|CONFIG_ARM64|CONFIG_POSITION_INDEPENDENT|CONFIG_OF_LIVE|CONFIG_ENV_USE_DEFAULT_ENV_TEXT_FILE|CONFIG_DEFAULT_DEVICE_TREE|CONFIG_BOOTDELAY)=" .config
+
+      - name: Package boot.img
+        run: |
+          mkdir -p out
+          bash uboot/pack.sh uboot-src/u-boot.bin out/uboot-nx809j-boot.img out/mkwork
+          cp uboot-src/u-boot.bin      out/
+          cp uboot-src/u-boot.dtb      out/
+          cp uboot-src/u-boot.map      out/
+          cp uboot-src/.config         out/uboot-config
+          # Keep the exact sources used, so an artifact can always be traced
+          # back to the tree that produced it.
+          mkdir -p out/src
+          cp uboot-src/arch/arm/dts/kaanapali-nubia-nx809j.dts out/src/
+          cp uboot-src/board/qualcomm/nx809j.env              out/src/
+          cp uboot-src/configs/qcom_nx809j_defconfig          out/src/
+          ls -lh out/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nubia-nx809j-uboot
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30

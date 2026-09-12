@@ -1,0 +1,252 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Nubia Red Magic 11S Pro+ (NX809J) board devicetree for U-Boot.
+ * SoC: Qualcomm SM8850 "Kaanapali".
+ *
+ * Modelled on the OnePlus 15 (infiniti) board port by EYC <e@eyc.one>:
+ * the SoC blocks U-Boot drives are identical (same silicon), only the board
+ * identity and the panel geometry differ.
+ *
+ * Node addresses, clock indices and PHY parameters follow the Linux
+ * kaanapali DTS material (BSD-3-Clause, (c) Qualcomm).
+ *
+ * U-Boot runs here as an Android boot image chainloaded by ABL, and inherits
+ * the hardware ABL already brought up. Only the blocks U-Boot itself drives
+ * are described.
+ *
+ * There is deliberately no /memory node: board_fdt_blob_setup() prefers this
+ * devicetree for control data, but falls back to the devicetree ABL passed in
+ * when this one carries no usable /memory. Leaving /memory out is what makes
+ * U-Boot take the RAM ranges from ABL rather than a hardcoded guess.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/clock/qcom,kaanapali-gcc.h>
+#include <dt-bindings/clock/qcom,rpmh.h>
+#include <dt-bindings/clock/qcom,sm8750-tcsr.h>
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	model = "Nubia Red Magic 11S Pro+ (NX809J)";
+	compatible = "nubia,nx809j", "qcom,kaanapali";
+	chassis-type = "handset";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * ABL leaves the DPU scanning out of the splash buffer, so
+		 * U-Boot can draw the console into it with no display driver.
+		 * The splash buffer is at 0xfc800000 with a 0x2b00000 carve-out
+		 * (confirmed from the device's own reserved-memory:
+		 * reserved-memory/splash_region = 0xfc800000 + 0x2b00000).
+		 * Geometry matches the panel the ABL programmed: 1216x2688,
+		 * 32bpp (device reports a 1216x2688 / 520dpi panel).
+		 */
+		framebuffer: framebuffer@fc800000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfc800000 0x0 (1216 * 2688 * 4)>;
+			width = <1216>;
+			height = <2688>;
+			stride = <(1216 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/*
+	 * The reference port deliberately leaves /memory out, so that
+	 * board_fdt_blob_setup() falls back to the devicetree ABL hands over in
+	 * x0 and U-Boot takes the RAM ranges from ABL instead of a hardcoded
+	 * guess. That is the right default, but it has one failure mode that is
+	 * invisible on this board: if ABL ever starts U-Boot *without* a usable
+	 * devicetree, qcom_parse_memory() fails on both the internal and the
+	 * external tree and U-Boot calls
+	 *
+	 *     panic("No valid memory ranges found!\n")
+	 *
+	 * from fdtdec_setup() - long before the video console is registered.
+	 * With CONFIG_PANIC_HANG=y that hangs the panel with no output at all,
+	 * which is indistinguishable from a dead port and burns a flash cycle
+	 * to learn nothing.
+	 *
+	 * So the ranges are spelled out here as a bring-up safety net. They are
+	 * NOT a guess: they are copied verbatim from this device's own
+	 * ABL-supplied devicetree - the /memory node ABL injects, read back from
+	 * a stock Android boot with
+	 *
+	 *     adb shell su -c 'dd if=/sys/firmware/fdt of=/data/local/tmp/x'
+	 *     adb pull /data/local/tmp/x stock-nx809j.dtb
+	 *
+	 * (a 24 GiB NX809J; regenerate them from that file for any other SKU).
+	 * Note these are ABL's *usable* ranges: the 0x80000000-0x81960000
+	 * hypervisor/TZ/ABL carve-outs are already subtracted, and the region
+	 * below 0x80000000 is not DDR. U-Boot still prefers this tree for
+	 * control data and only the RAM ranges come from here, so if ABL does
+	 * pass its own devicetree the map is the same either way.
+	 *
+	 * The node must be named "memory" with no unit address:
+	 * qcom_parse_memory() looks it up as fdt_path_offset(fdt, "/memory").
+	 */
+	memory {
+		device_type = "memory";
+		reg = <0x0 0x81960000 0x0 0xa0000>,
+		      <0x0 0x81a60000 0x0 0x1a0000>,
+		      <0x0 0x81cf4000 0x0 0xc000>,
+		      <0x0 0x82478000 0x0 0x28000>,
+		      <0x0 0x82600000 0x0 0x100000>,
+		      <0x0 0x82800000 0x0 0x2200000>,
+		      <0x0 0x8a980000 0x0 0x80000>,
+		      <0x0 0x9959c000 0x0 0x64000>,
+		      <0x0 0x9ce80000 0x0 0x2e00000>,
+		      <0x0 0x9ffe0000 0x0 0x70000>,
+		      <0x0 0xa0910000 0x0 0xa70000>,
+		      <0x0 0xa5a00000 0x0 0x2f423000>,
+		      <0x0 0xd5100000 0x0 0x2700000>,
+		      <0x0 0xd79c0000 0x0 0x40000>,
+		      <0x0 0xd7c00000 0x0 0x400000>,
+		      <0x0 0xdfda0000 0x0 0x1fa60000>,
+		      <0x8 0x80000000 0x0 0x2f6fd000>,
+		      <0x8 0xb0000000 0x0 0x8500000>,
+		      <0x8 0xc0000000 0x1 0x40000000>,
+		      <0xa 0x0 0x2 0x0>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * The splash carve-out ABL set up. It must stay reserved so
+		 * neither U-Boot's LMB allocations nor the kernel ever place
+		 * anything on top of the buffer the DPU is scanning out of.
+		 */
+		cont_splash: framebuffer@fc800000 {
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * RPMh clock output. In the Linux kaanapali.dtsi this lives inside the
+	 * apps_rsc; U-Boot's kaanapali_rpmh_clk driver only reports fixed rates
+	 * and drives no hardware, so it is modelled here as a standalone,
+	 * reg-less clock controller. It provides the UFS PHY reference clock.
+	 */
+	rpmhcc: clock-controller {
+		compatible = "qcom,kaanapali-rpmh-clk";
+		#clock-cells = <1>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		gcc: clock-controller@100000 {
+			compatible = "qcom,kaanapali-gcc";
+			reg = <0x0 0x00100000 0x0 0x1f4200>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			#power-domain-cells = <1>;
+		};
+
+		tcsr: clock-controller@1fc0000 {
+			compatible = "qcom,kaanapali-tcsr", "syscon";
+			reg = <0x0 0x01fc0000 0x0 0x30000>;
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		/*
+		 * The SMMU on Qualcomm phones is brought up early by firmware,
+		 * is partly emulated by the hypervisor, and cannot be turned
+		 * off; streams with no mapping FAULT. U-Boot's qcom_smmu500
+		 * driver installs an identity stream mapping at controller
+		 * probe. compatible/reg/#iommu-cells and the UFS stream ID
+		 * below are copied verbatim from the Linux kaanapali.dtsi;
+		 * interrupts, #global-interrupts and dma-coherent are omitted
+		 * (the U-Boot driver consumes none of them).
+		 */
+		apps_smmu: iommu@15000000 {
+			compatible = "qcom,kaanapali-smmu-500", "qcom,smmu-500",
+				     "arm,mmu-500";
+			reg = <0x0 0x15000000 0x0 0x100000>;
+			#iommu-cells = <2>;
+		};
+
+		/*
+		 * UFS is the only storage on this phone. These two nodes let
+		 * U-Boot bring up the controller and QMP UFS PHY so it can
+		 * READ a partition. The register, clock, reset, power-domain
+		 * and iommu properties are copied verbatim from the Linux
+		 * kaanapali.dtsi; properties U-Boot does not consume
+		 * (interrupts, interconnects, the OPP table) are omitted so no
+		 * dangling phandle to an absent provider is created.
+		 */
+		ufs_mem_phy: phy@1d80000 {
+			compatible = "qcom,kaanapali-qmp-ufs-phy",
+				     "qcom,sm8750-qmp-ufs-phy";
+			reg = <0x0 0x01d80000 0x0 0x2000>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK>,
+				 <&gcc GCC_UFS_PHY_PHY_AUX_CLK>,
+				 <&tcsr TCSR_UFS_CLKREF_EN>;
+			clock-names = "ref",
+				      "ref_aux",
+				      "qref";
+
+			power-domains = <&gcc GCC_UFS_MEM_PHY_GDSC>;
+
+			#clock-cells = <1>;
+			#phy-cells = <0>;
+
+			status = "okay";
+		};
+
+		ufs_mem_hc: ufs@1d84000 {
+			compatible = "qcom,kaanapali-ufshc",
+				     "qcom,ufshc",
+				     "jedec,ufs-2.0";
+			reg = <0x0 0x01d84000 0x0 0x3000>;
+
+			clocks = <&gcc GCC_UFS_PHY_AXI_CLK>,
+				 <&gcc GCC_AGGRE_UFS_PHY_AXI_CLK>,
+				 <&gcc GCC_UFS_PHY_AHB_CLK>,
+				 <&gcc GCC_UFS_PHY_UNIPRO_CORE_CLK>,
+				 <&rpmhcc RPMH_LN_BB_CLK3>,
+				 <&gcc GCC_UFS_PHY_TX_SYMBOL_0_CLK>,
+				 <&gcc GCC_UFS_PHY_RX_SYMBOL_0_CLK>,
+				 <&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
+			clock-names = "core_clk",
+				      "bus_aggr_clk",
+				      "iface_clk",
+				      "core_clk_unipro",
+				      "ref_clk",
+				      "tx_lane0_sync_clk",
+				      "rx_lane0_sync_clk",
+				      "rx_lane1_sync_clk";
+
+			resets = <&gcc GCC_UFS_PHY_BCR>;
+			reset-names = "rst";
+
+			power-domains = <&gcc GCC_UFS_PHY_GDSC>;
+
+			iommus = <&apps_smmu 0x60 0x0>;
+
+			phys = <&ufs_mem_phy>;
+			phy-names = "ufsphy";
+
+			#reset-cells = <1>;
+
+			status = "okay";
+		};
+	};
+};
