@@ -1,4 +1,4 @@
-﻿name: Build U-Boot (NX809J)
+name: Build U-Boot (NX809J)
 
 # Builds the U-Boot port for the Nubia Red Magic 11S Pro+ (NX809J, SM8850
 # "kaanapali") on top of infiniti-mainline/u-boot's kaanapali SoC support, and
@@ -36,7 +36,7 @@ env:
   #   main   = the port (upstream + NX809J board support)
   #   master = pristine upstream, the fork's base (8dbe57ba648)
   UBOOT_REPO: https://github.com/code002-2/uboot
-  UBOOT_DEFAULT_REF: 870586b0cd0d655ecc3fe23331b0fb8e31efbb09
+  UBOOT_DEFAULT_REF: 516745733ba36fabc1c3ff72ab624d338a04df5c
 
 jobs:
   uboot:
