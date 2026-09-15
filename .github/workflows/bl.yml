@@ -1,0 +1,88 @@
+name: Build EFI bootloader (NX809J)
+
+# Builds bl/nx809j-boot.c: a small UEFI application that boots a mainline arm64
+# kernel directly. It exists because the stock ABL only starts images that match
+# the OEM vbmeta, so the kernel cannot live in boot_a; the one unverified
+# executable slot on this board is `efisp`, whose UEFI application (GBL) reads a
+# boot menu from the ESP inside `persist`. Dropping this file into that ESP adds
+# a menu entry that boots mainline Linux.
+#
+# The output is a raw ARM64 binary plus the list of base relocations, which
+# tools/pewrap.py (in ~/nubia) turns into a PE32+ UEFI application with a real
+# .reloc section - the shape GBL's EDK2 loader accepts.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bl/**"
+      - ".github/workflows/bl.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bl:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Compile
+        run: |
+          set -e
+          mkdir -p out
+          aarch64-linux-gnu-gcc -c -O2 \
+            -fPIC -fno-plt -fvisibility=hidden -ffreestanding \
+            -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables \
+            -fno-builtin -mgeneral-regs-only -mno-outline-atomics \
+            -Wall -Wextra -Wno-unused-parameter \
+            bl/nx809j-boot.c -o nx809j-boot.o
+
+      - name: Link (PIE, linked at 0, entry first)
+        run: |
+          set -e
+          aarch64-linux-gnu-ld -pie -T bl/bl.lds --no-dynamic-linker \
+            -o nx809j-boot.elf nx809j-boot.o
+          aarch64-linux-gnu-objcopy -O binary nx809j-boot.elf out/nx809j-boot.bin
+          aarch64-linux-gnu-readelf -h nx809j-boot.elf
+          ls -l out/nx809j-boot.bin
+
+      - name: Dump relocations to convert into a PE .reloc section
+        run: |
+          set -e
+          aarch64-linux-gnu-readelf -r nx809j-boot.elf > out/relocs-raw.txt || true
+          # first column of each R_AARCH64_RELATIVE line is the offset
+          awk '/R_AARCH64_RELATIVE/ { gsub(":", "", $1); print $1 }' \
+            out/relocs-raw.txt > out/relocs.txt
+          echo "relocations: $(wc -l < out/relocs.txt)"
+          head -20 out/relocs.txt
+          aarch64-linux-gnu-readelf -S nx809j-boot.elf | head -30
+
+      - name: Sanity checks
+        run: |
+          set -e
+          # the entry point must be the first instruction of the image
+          aarch64-linux-gnu-objdump -d --start-address=0 --stop-address=32 nx809j-boot.elf
+          size=$(stat -c %s out/nx809j-boot.bin)
+          [ "$size" -gt 1024 ] || { echo "!! image suspiciously small"; exit 1; }
+          [ "$size" -lt 262144 ] || { echo "!! image unexpectedly large"; exit 1; }
+          echo "flat image $size bytes"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: nx809j-efi-bootloader
+          path: |
+            out/nx809j-boot.bin
+            out/relocs.txt
+            out/relocs-raw.txt
+          if-no-files-found: error
