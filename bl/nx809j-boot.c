@@ -124,13 +124,14 @@ typedef struct EFI_BOOT_SERVICES {
 	void *LocateHandle;                                     // 176
 	void *LocateDevicePath;                                 // 184
 	void *InstallConfigurationTable;                        // 192
-	void *LoadImage;                                        // 200
-	void *StartImage;                                       // 208
+	EFI_STATUS(EFIAPI * LoadImage)(u8, EFI_HANDLE, void *, void *, UINTN,
+					EFI_HANDLE *);                 // 200
+	EFI_STATUS(EFIAPI * StartImage)(EFI_HANDLE, UINTN *, u16 **); // 208
 	void *Exit;                                             // 216
 	void *UnloadImage;                                      // 224
 	EFI_STATUS(EFIAPI * ExitBootServices)(EFI_HANDLE, UINTN); // 232
 	void *GetNextMonotonicCount;                            // 240
-	void *Stall;                                            // 248
+	EFI_STATUS(EFIAPI * Stall)(UINTN);                      // 248
 	void *SetWatchdogTimer;                                 // 256
 	void *ConnectController;                                // 264
 	void *DisconnectController;                             // 272
@@ -346,6 +347,202 @@ static EFI_STATUS read_at(EFI_BLOCK_IO_PROTOCOL *bio, u64 off, u64 len, void *ds
 	return EFI_SUCCESS;
 }
 
+// ------------------------------------------------------------ console / input
+
+static EFI_SYSTEM_TABLE *sys_table;
+static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *conOut;
+static EFI_SIMPLE_TEXT_INPUT_PROTOCOL *conIn;
+static u16 console_buf[256];
+
+typedef struct {
+	u16 ScanCode;
+	u16 UnicodeChar;
+} EFI_INPUT_KEY;
+
+typedef struct {
+	void *Reset;
+	EFI_STATUS(EFIAPI * ReadKeyStroke)(void *, EFI_INPUT_KEY *);
+} EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
+
+typedef struct {
+	void *Reset;
+	EFI_STATUS(EFIAPI * OutputString)(void *, u16 *);
+} EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+
+
+static void print(const char *s)
+{
+	u16 *out = console_buf;
+	usize n = 0;
+
+	while (*s && n < 254) {
+		if (*s == '\n')
+			out[n++] = '\r';
+		out[n++] = (u16)(u8)*s++;
+	}
+	out[n] = 0;
+	conOut->OutputString(conOut, console_buf);
+}
+
+
+// Poll the console for a key for up to `ms` milliseconds. Returns the
+// unicode character, or 0 if nothing was pressed. Uses Stall() because the
+// firmware timer protocols are not worth depending on here.
+static u16 wait_key(u32 ms)
+{
+	EFI_BOOT_SERVICES *bs = sys_table->BootServices;
+	u32 waited = 0;
+
+	while (waited < ms) {
+		EFI_INPUT_KEY key;
+		if (conIn && conIn->ReadKeyStroke(conIn, &key) == EFI_SUCCESS)
+			return key.UnicodeChar ? key.UnicodeChar : 0x100 + key.ScanCode;
+		bs->Stall(20000);	/* 20 ms */
+		waited += 20;
+	}
+	return 0;
+}
+
+// ---------------------------------------------------------------- chainload
+//
+// Booting Android from here means starting the very UEFI application GBL would
+// have started for its own 'Android' entry: the stock loader in the ESP. That
+// is a LoadImage/StartImage of a file on the volume we were started from, so we
+// build a device path by appending a file-path node to our own device path.
+
+typedef struct {
+	u32 Revision;
+	u32 Pad;
+	EFI_HANDLE ParentHandle;
+	EFI_SYSTEM_TABLE *SystemTable;
+	EFI_HANDLE DeviceHandle;
+} EFI_LOADED_IMAGE_PROTOCOL;
+
+typedef struct {
+	u64 Revision;
+	EFI_STATUS(EFIAPI * Open)(void *, void **, u16 *, u64, u64);
+	EFI_STATUS(EFIAPI * Close)(void *);
+	void *Delete;
+	void *Read;
+	void *Write;
+	void *GetPosition;
+	void *SetPosition;
+	void *GetInfo;
+	void *SetInfo;
+	void *Flush;
+} EFI_FILE_PROTOCOL;
+
+typedef struct {
+	u64 Revision;
+	EFI_STATUS(EFIAPI * OpenVolume)(void *, EFI_FILE_PROTOCOL **);
+} EFI_SIMPLE_FILE_SYSTEM_PROTOCOL;
+
+#pragma pack(1)
+typedef struct {
+	u8 Type;
+	u8 SubType;
+	u16 Length;
+} EFI_DEVICE_PATH_PROTOCOL;
+#pragma pack()
+
+static const EFI_GUID gLoadedImageGuid = { 0x5b1b31a1, 0x9562, 0x11d2,
+					   { 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } };
+static const EFI_GUID gSimpleFsGuid = { 0x964e5b22, 0x6459, 0x11d2,
+					{ 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } };
+
+static void ascii_to_u16(const char *s, u16 *out)
+{
+	while (*s)
+		*out++ = (u16)(u8)*s++;
+	*out = 0;
+}
+
+// Boot `path` (ASCII, e.g. "\\efisp\\boot_android.efi") off our own volume.
+static EFI_STATUS chainload(EFI_HANDLE image_handle, const char *path)
+{
+	EFI_BOOT_SERVICES *bs = sys_table->BootServices;
+	EFI_LOADED_IMAGE_PROTOCOL *li = NULL;
+	EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs = NULL;
+	EFI_FILE_PROTOCOL *root = NULL, *file = NULL;
+	EFI_DEVICE_PATH_PROTOCOL *devpath = NULL;
+	EFI_HANDLE new_image = NULL;
+	u8 pathbuf[256];
+	EFI_DEVICE_PATH_PROTOCOL *fp = (EFI_DEVICE_PATH_PROTOCOL *)pathbuf;
+	u16 name[128];
+	EFI_STATUS status;
+	usize plen, i;
+
+	status = bs->HandleProtocol(image_handle, (EFI_GUID *)&gLoadedImageGuid,
+				    (void **)&li);
+	if (status != EFI_SUCCESS || !li)
+		return status;
+	status = bs->HandleProtocol(li->DeviceHandle, (EFI_GUID *)&gSimpleFsGuid,
+				    (void **)&fs);
+	if (status != EFI_SUCCESS || !fs)
+		return status;
+	status = fs->OpenVolume(fs, &root);
+	if (status != EFI_SUCCESS)
+		return status;
+
+	ascii_to_u16(path, name);
+	status = root->Open(root, &file, name, 1 /* read */, 0);
+	if (status != EFI_SUCCESS)
+		return status;
+
+	// device path: our own, with a MEDIA/FILEPATH node appended
+	status = bs->HandleProtocol(li->DeviceHandle,
+				    (EFI_GUID *)&(EFI_GUID){ 0x09576e91, 0x6d3f, 0x11d2,
+						{ 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } },
+				    (void **)&devpath);
+	if (status != EFI_SUCCESS || !devpath)
+		return status;
+	plen = 0;
+	while (plen < 16 && devpath[plen].Length &&
+	       !(devpath[plen].Type == 0x7f && devpath[plen].SubType == 0xff))
+		plen++;
+	{
+		usize dlen = 0;
+		for (i = 0; i < plen; i++)
+			dlen += devpath[i].Length;
+		if (dlen + 4 + 2 * 128 + 4 > sizeof(pathbuf))
+			return 1;
+		{
+			u8 *dst = pathbuf;
+			for (i = 0; i < plen; i++) {
+				usize k;
+				u8 *src = (u8 *)&devpath[i];
+				for (k = 0; k < devpath[i].Length; k++)
+					*dst++ = src[k];
+			}
+			fp = (EFI_DEVICE_PATH_PROTOCOL *)dst;
+		}
+	}
+	fp->Type = 4;		/* MEDIA_DEVICE_PATH */
+	fp->SubType = 4;	/* MEDIA_FILEPATH_DP */
+	{
+		u16 *fname = (u16 *)((u8 *)fp + 4);
+		usize n = 0;
+		ascii_to_u16(path, fname);
+		while (fname[n])
+			n++;
+		fp->Length = (u16)(4 + 2 * (n + 1));
+		/* end-of-path node */
+		{
+			EFI_DEVICE_PATH_PROTOCOL *end =
+				(EFI_DEVICE_PATH_PROTOCOL *)((u8 *)fp + fp->Length);
+			end->Type = 0x7f;
+			end->SubType = 0xff;
+			end->Length = 4;
+		}
+	}
+
+	status = bs->LoadImage(0 /* not boot policy */, image_handle,
+			       (void *)pathbuf, NULL, 0, &new_image);
+	if (status != EFI_SUCCESS)
+		return status;
+	return bs->StartImage(new_image, NULL, NULL);
+}
+
 // ---------------------------------------------------------------- entry point
 
 void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
@@ -360,52 +557,98 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 	EFI_STATUS status;
 	UINTN i;
 	int found = 0;
+	int boot_linux = 1;
+
+	sys_table = st;
+	conOut = (EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *)st->ConOut;
+	conIn = (EFI_SIMPLE_TEXT_INPUT_PROTOCOL *)st->ConIn;
+
+	print("\nNX809J bootloader\n\n  1) Android          "
+	      "(boot the stock Android loader)\n"
+	      "  2) Linux (mainline) (boot the kernel)\n\n"
+	      "  press 1/2 or volume up/down; default Linux in 5 s\n\n");
 
 	// 1. find the block device holding our payload
-	status = bs->LocateHandleBuffer(2 /* ByProtocol */, &gBlockIoGuid, NULL,
-					&nhandles, &handles);
-	if (status != EFI_SUCCESS)
-		goto out;
+	status = bs->LocateHandleBuffer(2 /* ByProtocol */, (EFI_GUID *)&gBlockIoGuid,
+					NULL, &nhandles, &handles);
+	if (status == EFI_SUCCESS) {
+		for (i = 0; i < nhandles; i++) {
+			EFI_BLOCK_IO_PROTOCOL *bio = NULL;
+			u8 probe[8];
 
-	for (i = 0; i < nhandles; i++) {
-		EFI_BLOCK_IO_PROTOCOL *bio = NULL;
-		u8 probe[8];
+			status = bs->HandleProtocol(handles[i], (EFI_GUID *)&gBlockIoGuid,
+						    (void **)&bio);
+			if (status != EFI_SUCCESS || !bio || !bio->Media)
+				continue;
+			if (!bio->Media->MediaPresent || bio->Media->BlockSize == 0)
+				continue;
+			if (bio->Media->LastBlock * bio->Media->BlockSize <
+			    BLOB_OFF + sizeof(hdr))
+				continue;
+			if (read_at(bio, BLOB_OFF, sizeof(probe), probe) != EFI_SUCCESS)
+				continue;
+			if (!memeq(probe, BLOB_MAGIC, 8))
+				continue;
+			if (read_at(bio, BLOB_OFF, sizeof(hdr), &hdr) != EFI_SUCCESS)
+				continue;
+			if (hdr.kernel_len == 0 || hdr.dtb_len == 0)
+				continue;
 
-		status = bs->HandleProtocol(handles[i], &gBlockIoGuid, (void **)&bio);
-		if (status != EFI_SUCCESS || !bio || !bio->Media)
-			continue;
-		if (!bio->Media->MediaPresent || bio->Media->BlockSize == 0)
-			continue;
-		if (bio->Media->LastBlock * bio->Media->BlockSize < BLOB_OFF + sizeof(hdr))
-			continue;
-		if (read_at(bio, BLOB_OFF, sizeof(probe), probe) != EFI_SUCCESS)
-			continue;
-		if (!memeq(probe, BLOB_MAGIC, 8))
-			continue;
-		if (read_at(bio, BLOB_OFF, sizeof(hdr), &hdr) != EFI_SUCCESS)
-			continue;
-		if (hdr.kernel_len == 0 || hdr.dtb_len == 0)
-			continue;
-
-		// 2. copy the three blobs to their load addresses
-		if (read_at(bio, BLOB_OFF + hdr.kernel_off, hdr.kernel_len,
-			    (void *)KERNEL_ADDR) != EFI_SUCCESS)
-			continue;
-		if (read_at(bio, BLOB_OFF + hdr.dtb_off, hdr.dtb_len,
-			    (void *)DTB_ADDR) != EFI_SUCCESS)
-			continue;
-		if (hdr.initrd_len &&
-		    read_at(bio, BLOB_OFF + hdr.initrd_off, hdr.initrd_len,
-			    (void *)INITRD_ADDR) != EFI_SUCCESS)
-			continue;
-		found = 1;
-		break;
+			// 2. copy the three blobs to their load addresses
+			if (read_at(bio, BLOB_OFF + hdr.kernel_off, hdr.kernel_len,
+				    (void *)KERNEL_ADDR) != EFI_SUCCESS)
+				continue;
+			if (read_at(bio, BLOB_OFF + hdr.dtb_off, hdr.dtb_len,
+				    (void *)DTB_ADDR) != EFI_SUCCESS)
+				continue;
+			if (hdr.initrd_len &&
+			    read_at(bio, BLOB_OFF + hdr.initrd_off, hdr.initrd_len,
+				    (void *)INITRD_ADDR) != EFI_SUCCESS)
+				continue;
+			found = 1;
+			break;
+		}
 	}
 
-	if (!found)
-		goto out;
+	if (!found) {
+		print("no kernel payload found (recovery_a is missing the blob)"
+		      "\nreturning to the boot menu...\n");
+		return;
+	}
 
-	// 3. leave boot services. GetMemoryMap's key must be the one in effect
+	// 3. menu: a key press within 5 s decides, otherwise Linux
+	for (i = 0; i < 25; i++) {
+		u16 key = wait_key(200);
+		if (!key)
+			continue;
+		if (key == '1') {
+			boot_linux = 0;
+			break;
+		}
+		if (key == '2') {
+			boot_linux = 1;
+			break;
+		}
+		if (key == 0x100 + 0x01 /* up */ || key == 'u') {
+			boot_linux = 1;
+			break;
+		}
+		if (key == 0x100 + 0x02 /* down */ || key == 'd') {
+			boot_linux = 0;
+			break;
+		}
+	}
+
+	if (!boot_linux) {
+		print("starting Android...\n");
+		status = chainload(image_handle, "\\efisp\\boot_android.efi");
+		print("could not start Android; returning to the boot menu\n");
+		return;
+	}
+
+	print("starting Linux...\n");
+
+	// 4. leave boot services. GetMemoryMap's key must be the one in effect
 	//    when ExitBootServices is called, so retry if the map grew.
 	{
 		void *mapbuf = NULL;
@@ -414,7 +657,7 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 		int tries;
 
 		if (bs->AllocatePool(EfiLoaderData, 65536, &mapbuf) != EFI_SUCCESS)
-			goto out;
+			return;
 
 		for (tries = 0; tries < 4; tries++) {
 			mapsize = 65536;
@@ -428,18 +671,14 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 				break;
 		}
 		if (status != EFI_SUCCESS)
-			goto out;	/* nothing sane left to do; hang instead */
+			return;
 	}
 
-	// 4. publish the payload and jump
+	// 5. publish the payload and jump
 	clean_dcache(KERNEL_ADDR, KERNEL_ADDR + hdr.kernel_len);
 	clean_dcache(DTB_ADDR, DTB_ADDR + hdr.dtb_len);
 	if (hdr.initrd_len)
 		clean_dcache(INITRD_ADDR, INITRD_ADDR + hdr.initrd_len);
 
 	drop_to_el_and_jump(DTB_ADDR, KERNEL_ADDR);
-
-out:
-	for (;;)
-		__asm__ volatile("wfe");
 }
