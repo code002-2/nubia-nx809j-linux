@@ -74,9 +74,12 @@ volatile u64 bl_info[4] __attribute__((used)) = {
 #define FB_ADDR		0xfc800000UL
 #define FB_PIXELS	(1216 * 2688)
 
-#define FB_BLUE		0xff0000ff
-#define FB_RED		0xffff0000
-#define FB_WHITE	0xffffffff
+#define FB_BLUE		0xff0000ff	/* entered our entry point */
+#define FB_GREEN	0xff00ff00	/* MMU and caches off */
+#define FB_CYAN		0xff00ffff	/* blobs located */
+#define FB_YELLOW	0xffffff00	/* dtb + initramfs copied */
+#define FB_RED		0xffff0000	/* kernel inflated */
+#define FB_WHITE	0xffffffff	/* about to jump */
 
 static void paint(u32 colour)
 {
@@ -103,9 +106,14 @@ static void clean_dcache(u64 start, u64 end)
 	__asm__ volatile("isb" ::: "memory");
 }
 
-static void drop_and_jump(u64 dtb, u64 entry) __attribute__((noreturn));
-
-static void drop_and_jump(u64 dtb, u64 entry)
+// Turn the MMU, D-cache and I-cache off for the current exception level.
+//
+// This runs *first*, before touching any memory outside our own image: the
+// firmware's page tables only cover what it happens to use, and writing the
+// kernel to 0xa5a00000 through them faulted (blue screen, then nothing). With
+// the MMU off every access is a plain physical one, which is also exactly the
+// state a kernel wants to be entered in.
+static void mmu_caches_off(void)
 {
 	u64 el;
 	u64 mask = ~((1UL << 0) | (1UL << 2) | (1UL << 12));	/* M | C | I */
@@ -123,6 +131,12 @@ static void drop_and_jump(u64 dtb, u64 entry)
 		__asm__ volatile("msr sctlr_el1, %0" :: "r"(v));
 	}
 	__asm__ volatile("isb" ::: "memory");
+}
+
+static void drop_and_jump(u64 dtb, u64 entry) __attribute__((noreturn));
+
+static void drop_and_jump(u64 dtb, u64 entry)
+{
 
 	// The arm64 boot protocol: x0 = devicetree, x1/x2/x3 are reserved and must
 	// be zero. A kernel entered with garbage in them stops dead before it gets
@@ -150,12 +164,17 @@ void efi_main(void)
 
 	paint(FB_BLUE);
 
+	mmu_caches_off();
+	paint(FB_GREEN);
+
 	blobs = base + bl_info[1];
 	h = (struct blob_hdr *)blobs;
 
 	for (i = 0; i < 8; i++)
 		if (h->magic[i] != BLOB_MAGIC[i])
 			goto hang;		/* wrapper did not patch us */
+
+	paint(FB_CYAN);
 
 	/* 1. devicetree and initramfs: straight copies to fixed addresses */
 	{
@@ -172,6 +191,8 @@ void efi_main(void)
 		for (i = 0; i < h->initrd_len; i++)
 			dst[i] = src[i];
 	}
+
+	paint(FB_YELLOW);
 
 	/* 2. kernel: inflate Image.gz straight to its load address */
 	if (gunzip(blobs + h->kernel_off, h->kernel_len, (u8 *)KERNEL_ADDR,
