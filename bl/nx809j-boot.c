@@ -158,14 +158,41 @@ static void mmu_caches_off(void)
 	__asm__ volatile("isb" ::: "memory");
 }
 
-static void drop_and_jump(u64 dtb, u64 entry) __attribute__((noreturn));
-
 static void drop_and_jump(u64 dtb, u64 entry)
 {
+	u64 el;
 
-	// The arm64 boot protocol: x0 = devicetree, x1/x2/x3 are reserved and must
-	// be zero. A kernel entered with garbage in them stops dead before it gets
-	// a console up, which is what "stuck at Booting" looked like.
+	__asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
+
+	if (el == (2UL << 2)) {
+		u64 v;
+
+		/* We are running at EL2 (the boot chain does). A kernel wants to
+		 * be entered at EL1: PSCI, the architected timer and the GIC are
+		 * all set up by the secure firmware for an EL1 caller, and a
+		 * kernel left at EL2 takes the hyp path instead. Drop a level,
+		 * exactly like a bootloader does. */
+		__asm__ volatile("mrs %0, sctlr_el1" : "=r"(v));
+		v &= ~((1UL << 0) | (1UL << 2) | (1UL << 12));	/* M | C | I */
+		__asm__ volatile("msr sctlr_el1, %0" :: "r"(v));
+
+		__asm__ volatile("mrs %0, hcr_el2" : "=r"(v));
+		v |= (1UL << 31);	/* RW: EL1 is AArch64 */
+		v &= ~(1UL << 0);	/* VM: no stage 2 */
+		__asm__ volatile("msr hcr_el2, %0" :: "r"(v));
+
+		__asm__ volatile("msr spsr_el2, %0" :: "r"(0x3c5UL));	/* EL1h, DAIF */
+		__asm__ volatile("msr elr_el2, %0" :: "r"(entry));
+		__asm__ volatile("isb" ::: "memory");
+		__asm__ volatile("mov x0, %0" :: "r"(dtb));
+		__asm__ volatile("mov x1, xzr" ::: "x1");
+		__asm__ volatile("mov x2, xzr" ::: "x2");
+		__asm__ volatile("mov x3, xzr" ::: "x3");
+		__asm__ volatile("eret");
+		__builtin_unreachable();
+	}
+
+	/* Already at EL1: plain branch, as the boot protocol describes. */
 	__asm__ volatile("mov x0, %0" :: "r"(dtb));
 	__asm__ volatile("mov x1, xzr" ::: "x1");
 	__asm__ volatile("mov x2, xzr" ::: "x2");
