@@ -64,6 +64,30 @@ volatile u64 bl_info[4] __attribute__((used)) = {
 	0,			/* [3] spare */
 };
 
+// ---------------------------------------------------------------- framebuffer
+//
+// Progress signal that survives a silent hang and uses no firmware at all: the
+// ABL leaves the DPU scanning the splash buffer, so writing pixels shows up on
+// the panel even though nothing here talks to a console. Colours: blue = we are
+// running, red = kernel inflated, white = about to jump.
+
+#define FB_ADDR		0xfc800000UL
+#define FB_PIXELS	(1216 * 2688)
+
+#define FB_BLUE		0xff0000ff
+#define FB_RED		0xffff0000
+#define FB_WHITE	0xffffffff
+
+static void paint(u32 colour)
+{
+	volatile u32 *fb = (volatile u32 *)FB_ADDR;
+	usize i;
+
+	for (i = 0; i < FB_PIXELS; i++)
+		fb[i] = colour;
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
 // ---------------------------------------------------------------- cache / MMU
 
 static void clean_dcache(u64 start, u64 end)
@@ -99,7 +123,14 @@ static void drop_and_jump(u64 dtb, u64 entry)
 		__asm__ volatile("msr sctlr_el1, %0" :: "r"(v));
 	}
 	__asm__ volatile("isb" ::: "memory");
+
+	// The arm64 boot protocol: x0 = devicetree, x1/x2/x3 are reserved and must
+	// be zero. A kernel entered with garbage in them stops dead before it gets
+	// a console up, which is what "stuck at Booting" looked like.
 	__asm__ volatile("mov x0, %0" :: "r"(dtb));
+	__asm__ volatile("mov x1, xzr" ::: "x1");
+	__asm__ volatile("mov x2, xzr" ::: "x2");
+	__asm__ volatile("mov x3, xzr" ::: "x3");
 	__asm__ volatile("br %0" :: "r"(entry));
 	__builtin_unreachable();
 }
@@ -116,6 +147,8 @@ void efi_main(void)
 	u8 *blobs;
 	usize out_len = 0;
 	usize i;
+
+	paint(FB_BLUE);
 
 	blobs = base + bl_info[1];
 	h = (struct blob_hdr *)blobs;
@@ -145,11 +178,15 @@ void efi_main(void)
 		   64UL * 1024 * 1024, &out_len))
 		goto hang;
 
+	paint(FB_RED);
+
 	/* 3. make it visible to a kernel that will run with the caches off */
 	clean_dcache(KERNEL_ADDR, KERNEL_ADDR + out_len);
 	clean_dcache(DTB_ADDR, DTB_ADDR + h->dtb_len);
 	if (h->initrd_len)
 		clean_dcache(INITRD_ADDR, INITRD_ADDR + h->initrd_len);
+
+	paint(FB_WHITE);
 
 	/* 4. hand over exactly like a bootloader hands over to a kernel */
 	drop_and_jump(DTB_ADDR, KERNEL_ADDR);
