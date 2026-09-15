@@ -81,6 +81,26 @@ volatile u64 bl_info[4] __attribute__((used)) = {
 #define FB_RED		0xffff0000	/* kernel inflated */
 #define FB_WHITE	0xffffffff	/* about to jump */
 
+/* Small patch, cheap enough to call while a 52 MiB kernel is inflating. */
+static void paint_patch(u32 x, u32 y, u32 w, u32 h, u32 colour)
+{
+	volatile u32 *fb = (volatile u32 *)FB_ADDR;
+	u32 row, col;
+
+	for (row = 0; row < h; row++)
+		for (col = 0; col < w; col++)
+			fb[(y + row) * 1216 + x + col] = colour;
+}
+
+/* Progress bar along the top: one stripe per MiB of kernel produced. */
+static void progress(usize produced)
+{
+	u32 mb = (u32)(produced >> 20);
+
+	if (mb < 60)
+		paint_patch(mb * 20, 0, 16, 24, FB_WHITE);
+}
+
 static void paint(u32 colour)
 {
 	volatile u32 *fb = (volatile u32 *)FB_ADDR;
@@ -195,6 +215,7 @@ void efi_main(void)
 	paint(FB_YELLOW);
 
 	/* 2. kernel: inflate Image.gz straight to its load address */
+	gz_progress = progress;
 	if (gunzip(blobs + h->kernel_off, h->kernel_len, (u8 *)KERNEL_ADDR,
 		   64UL * 1024 * 1024, &out_len))
 		goto hang;

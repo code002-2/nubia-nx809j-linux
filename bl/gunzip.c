@@ -30,19 +30,54 @@ struct gz {
 	u32 bitbuf;
 	int bitcnt;
 	u8 *out;
-	usize out_len;
+	usize out_len;		/* bytes produced (all but the tail are in out) */
 	usize out_cap;
+	u8 stage[64];		/* writes are batched: with the MMU off every
+				 * single byte store is a full bus round trip */
+	usize stage_n;
+	u8 inbuf[64];		/* same for reads: batch them too */
+	usize inbuf_n;
+	usize inbuf_i;
 	int err;
 };
+
+/* Optional progress callback, used to paint a bar on the panel. */
+void (*gz_progress)(usize produced);
+
+
+/* Next input byte, refilling the staging buffer with 8-byte loads. */
+static u8 gz_in_byte(struct gz *g)
+{
+	if (g->inbuf_i >= g->inbuf_n) {
+		usize left = g->in_len - g->in_pos;
+		usize take = left < sizeof(g->inbuf) ? left : sizeof(g->inbuf);
+		usize i;
+
+		if (!take) {
+			g->err = 1;
+			return 0;
+		}
+		for (i = 0; i + 8 <= take; i += 8) {
+			u64 v = *(const volatile u64 *)(g->in + g->in_pos + i);
+			int k;
+			for (k = 0; k < 8; k++)
+				g->inbuf[i + k] = (u8)(v >> (8 * k));
+		}
+		for (; i < take; i++)
+			g->inbuf[i] = g->in[g->in_pos + i];
+		g->in_pos += take;
+		g->inbuf_n = take;
+		g->inbuf_i = 0;
+	}
+	return g->inbuf[g->inbuf_i++];
+}
 
 static void gz_bits(struct gz *g, int need)
 {
 	while (g->bitcnt < need) {
-		if (g->in_pos >= g->in_len) {
-			g->err = 1;
+		g->bitbuf |= (u32)gz_in_byte(g) << g->bitcnt;
+		if (g->err)
 			return;
-		}
-		g->bitbuf |= (u32)g->in[g->in_pos++] << g->bitcnt;
 		g->bitcnt += 8;
 	}
 }
@@ -111,13 +146,70 @@ static int huff_decode(struct gz *g, struct huff *h)
 	return -1;
 }
 
+/* Flush the staged bytes with 8-byte stores. */
+static void gz_flush(struct gz *g)
+{
+	usize i;
+
+	for (i = 0; i + 8 <= g->stage_n; i += 8) {
+		u64 v = 0;
+		int k;
+		for (k = 0; k < 8; k++)
+			v |= (u64)g->stage[i + k] << (8 * k);
+		*(volatile u64 *)(g->out + g->out_len - g->stage_n + i) = v;
+	}
+	for (; i < g->stage_n; i++)
+		g->out[g->out_len - g->stage_n + i] = g->stage[i];
+	g->stage_n = 0;
+}
+
+/* Discard the bits left in the current byte (stored blocks are byte aligned). */
+static void gz_align(struct gz *g)
+{
+	int drop = g->bitcnt & 7;
+
+	if (drop) {
+		g->bitbuf >>= drop;
+		g->bitcnt -= drop;
+	}
+}
+
+/* Byte access that drains whole bytes already sitting in the bit buffer. */
+static u8 gz_byte(struct gz *g)
+{
+	if (g->bitcnt >= 8) {
+		u8 v = (u8)(g->bitbuf & 0xff);
+
+		g->bitbuf >>= 8;
+		g->bitcnt -= 8;
+		return v;
+	}
+	return gz_in_byte(g);
+}
+
+/* Read a byte that has already been produced: it may still be staged. */
+static u8 gz_peek(struct gz *g, usize idx)
+{
+	usize staged_from = g->out_len - g->stage_n;
+
+	if (idx >= staged_from)
+		return g->stage[idx - staged_from];
+	return g->out[idx];
+}
+
 static void gz_put(struct gz *g, u8 b)
 {
-	if (g->out_len < g->out_cap)
-		g->out[g->out_len] = b;
-	else
+	if (g->out_len >= g->out_cap) {
 		g->err = 1;
+		g->out_len++;
+		return;
+	}
+	g->stage[g->stage_n++] = b;
 	g->out_len++;
+	if (g->stage_n == sizeof(g->stage))
+		gz_flush(g);
+	if (gz_progress && (g->out_len & 0xfffff) == 1)
+		gz_progress(g->out_len);
 }
 
 static int inflate_block(struct gz *g, struct huff *lit, struct huff *dist)
@@ -153,7 +245,7 @@ static int inflate_block(struct gz *g, struct huff *lit, struct huff *dist)
 			if ((usize)back > g->out_len)
 				return -1;
 			for (i = 0; i < len; i++)
-				gz_put(g, g->out[g->out_len - back]);
+				gz_put(g, gz_peek(g, g->out_len - back));
 		}
 		if (g->err)
 			return -1;
@@ -249,6 +341,9 @@ static int gunzip(const u8 *in, usize in_len, u8 *out, usize out_cap, usize *out
 	g.out = out;
 	g.out_len = 0;
 	g.out_cap = out_cap;
+	g.stage_n = 0;
+	g.inbuf_n = 0;
+	g.inbuf_i = 0;
 	g.err = 0;
 
 	if (in_len < 18 || in[0] != 0x1f || in[1] != 0x8b || in[2] != 8)
@@ -274,6 +369,8 @@ static int gunzip(const u8 *in, usize in_len, u8 *out, usize out_cap, usize *out
 		if (p >= in_len)
 			return -1;
 		g.in_pos = p;
+		g.inbuf_n = 0;
+		g.inbuf_i = 0;
 	}
 
 	do {
@@ -284,17 +381,17 @@ static int gunzip(const u8 *in, usize in_len, u8 *out, usize out_cap, usize *out
 				return -1;
 			if (type == 0) {			/* stored */
 				u32 len, nlen;
-				g.bitbuf = 0;
-				g.bitcnt = 0;
-				if (g.in_pos + 4 > g.in_len)
-					return -1;
-				len = (u32)g.in[g.in_pos] | ((u32)g.in[g.in_pos + 1] << 8);
-				nlen = (u32)g.in[g.in_pos + 2] | ((u32)g.in[g.in_pos + 3] << 8);
-				g.in_pos += 4;
-				if ((len ^ 0xffff) != nlen || g.in_pos + len > g.in_len)
+
+				/* Only the bits left in the current byte are dropped;
+				 * the bit buffer can still hold whole bytes that
+				 * belong to what follows the header. */
+				gz_align(&g);
+				len = (u32)gz_byte(&g) | ((u32)gz_byte(&g) << 8);
+				nlen = (u32)gz_byte(&g) | ((u32)gz_byte(&g) << 8);
+				if ((len ^ 0xffff) != nlen)
 					return -1;
 				while (len--)
-					gz_put(&g, g.in[g.in_pos++]);
+					gz_put(&g, gz_byte(&g));
 			} else if (type == 1) {			/* fixed */
 				huff_fixed(&lit, &dist);
 				if (inflate_block(&g, &lit, &dist))
@@ -312,6 +409,7 @@ static int gunzip(const u8 *in, usize in_len, u8 *out, usize out_cap, usize *out
 			return -1;
 	} while (!last);
 
+	gz_flush(&g);
 	*out_len = g.out_len;
 	return g.err ? -1 : 0;
 }
