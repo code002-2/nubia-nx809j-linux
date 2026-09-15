@@ -350,9 +350,6 @@ static EFI_STATUS read_at(EFI_BLOCK_IO_PROTOCOL *bio, u64 off, u64 len, void *ds
 // ------------------------------------------------------------ console / input
 
 static EFI_SYSTEM_TABLE *sys_table;
-static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *conOut;
-static EFI_SIMPLE_TEXT_INPUT_PROTOCOL *conIn;
-static u16 console_buf[256];
 
 typedef struct {
 	u16 ScanCode;
@@ -368,6 +365,10 @@ typedef struct {
 	void *Reset;
 	EFI_STATUS(EFIAPI * OutputString)(void *, u16 *);
 } EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+
+static EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *conOut;
+static EFI_SIMPLE_TEXT_INPUT_PROTOCOL *conIn;
+static u16 console_buf[256];
 
 
 static void print(const char *s)
@@ -485,7 +486,7 @@ static EFI_STATUS chainload(EFI_HANDLE image_handle, const char *path)
 		return status;
 
 	ascii_to_u16(path, name);
-	status = root->Open(root, &file, name, 1 /* read */, 0);
+	status = root->Open(root, (void **)&file, name, 1 /* read */, 0);
 	if (status != EFI_SUCCESS)
 		return status;
 
