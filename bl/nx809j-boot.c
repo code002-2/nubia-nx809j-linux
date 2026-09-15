@@ -92,13 +92,14 @@ static void paint_patch(u32 x, u32 y, u32 w, u32 h, u32 colour)
 			fb[(y + row) * 1216 + x + col] = colour;
 }
 
-/* Progress bar along the top: one stripe per MiB of kernel produced. */
+/* Progress: one full-height band per MiB of kernel produced, so it fills the
+ * whole panel as the kernel inflates and cannot be missed. */
 static void progress(usize produced)
 {
 	u32 mb = (u32)(produced >> 20);
 
-	if (mb < 60)
-		paint_patch(mb * 20, 0, 16, 24, FB_WHITE);
+	if (mb < 53)
+		paint_patch(mb * 22, 0, 20, 2688, FB_WHITE);
 }
 
 static void paint(u32 colour)
