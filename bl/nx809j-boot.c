@@ -188,7 +188,7 @@ typedef struct {
 	EFI_BLOCK_IO_MEDIA *Media;
 	EFI_STATUS(EFIAPI * Reset)(void *, int);
 	EFI_STATUS(EFIAPI * ReadBlocks)(void *, u32, EFI_LBA, UINTN, void *);
-	void *WriteBlocks;
+	EFI_STATUS(EFIAPI * WriteBlocks)(void *, u32, EFI_LBA, UINTN, void *);
 	void *FlushBlocks;
 } EFI_BLOCK_IO_PROTOCOL;
 
@@ -544,6 +544,29 @@ static EFI_STATUS chainload(EFI_HANDLE image_handle, const char *path)
 	return bs->StartImage(new_image, NULL, NULL);
 }
 
+// ---------------------------------------------------------------- progress
+//
+// The vendor memory-dump screen overwrites the panel, so anything printed
+// before a crash is lost. Each stage therefore stamps a marker block in the
+// partition that holds the payload (block 255, i.e. just before BLOB_OFF); it
+// can be read back afterwards with
+//     dd if=/dev/block/by-name/recovery_a bs=4096 skip=255 count=1 | xxd
+// which is how we tell "the scan crashed" from "the kernel would not start".
+
+#define MARK_BLOCK	((BLOB_OFF / 4096) - 1)
+#define MARK_MAGIC	"NX809JMK"
+
+static void mark(EFI_BLOCK_IO_PROTOCOL *bio, u8 code)
+{
+	u8 buf[4096];
+
+	if (!bio || bio->Media->BlockSize != 4096)
+		return;
+	memcpy_(buf, MARK_MAGIC, 8);
+	buf[8] = code;
+	bio->WriteBlocks(bio, bio->Media->MediaId, MARK_BLOCK, 4096, buf);
+}
+
 // ---------------------------------------------------------------- entry point
 
 void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
@@ -559,15 +582,11 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 	UINTN i;
 	int found = 0;
 	int boot_linux = 1;
+	EFI_BLOCK_IO_PROTOCOL *blob_bio = NULL;
 
 	sys_table = st;
 	conOut = (EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *)st->ConOut;
 	conIn = (EFI_SIMPLE_TEXT_INPUT_PROTOCOL *)st->ConIn;
-
-	print("\nNX809J bootloader\n\n  1) Android          "
-	      "(boot the stock Android loader)\n"
-	      "  2) Linux (mainline) (boot the kernel)\n\n"
-	      "  press 1/2 or volume up/down; default Linux in 5 s\n\n");
 
 	// 1. find the block device holding our payload
 	status = bs->LocateHandleBuffer(2 /* ByProtocol */, (EFI_GUID *)&gBlockIoGuid,
@@ -595,17 +614,23 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 			if (hdr.kernel_len == 0 || hdr.dtb_len == 0)
 				continue;
 
+			blob_bio = bio;
+			mark(bio, 1);		/* payload found */
+
 			// 2. copy the three blobs to their load addresses
 			if (read_at(bio, BLOB_OFF + hdr.kernel_off, hdr.kernel_len,
 				    (void *)KERNEL_ADDR) != EFI_SUCCESS)
 				continue;
+			mark(bio, 2);		/* kernel copied */
 			if (read_at(bio, BLOB_OFF + hdr.dtb_off, hdr.dtb_len,
 				    (void *)DTB_ADDR) != EFI_SUCCESS)
 				continue;
+			mark(bio, 3);		/* dtb copied */
 			if (hdr.initrd_len &&
 			    read_at(bio, BLOB_OFF + hdr.initrd_off, hdr.initrd_len,
 				    (void *)INITRD_ADDR) != EFI_SUCCESS)
 				continue;
+			mark(bio, 4);		/* initrd copied */
 			found = 1;
 			break;
 		}
@@ -616,6 +641,11 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 		      "\nreturning to the boot menu...\n");
 		return;
 	}
+
+	print("\nNX809J bootloader\n\n  1) Android          "
+	      "(boot the stock Android loader)\n"
+	      "  2) Linux (mainline) (boot the kernel)\n\n"
+	      "  press 1/2 or volume up/down; default Linux in 5 s\n\n");
 
 	// 3. menu: a key press within 5 s decides, otherwise Linux
 	for (i = 0; i < 25; i++) {
@@ -640,6 +670,8 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 		}
 	}
 
+	mark(blob_bio, 5);		/* menu answered */
+
 	if (!boot_linux) {
 		print("starting Android...\n");
 		status = chainload(image_handle, "\\efisp\\boot_android.efi");
@@ -648,6 +680,8 @@ void efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 	}
 
 	print("starting Linux...\n");
+
+	mark(blob_bio, 6);		/* last marker: no services past here */
 
 	// 4. leave boot services. GetMemoryMap's key must be the one in effect
 	//    when ExitBootServices is called, so retry if the map grew.
